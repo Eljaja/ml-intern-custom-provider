@@ -13,7 +13,7 @@ from litellm.exceptions import ContextWindowExceededError
 
 from agent.config import Config
 from agent.core.doom_loop import check_for_doom_loop
-from agent.core.llm_params import _resolve_llm_params
+from agent.core.llm_params import _resolve_llm_params, use_custom_inference_openai_key_env
 from agent.core.prompt_caching import with_prompt_caching
 from agent.core.session import Event, OpType, Session
 from agent.core.tools import ToolRouter
@@ -302,15 +302,18 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
     messages, tools = with_prompt_caching(messages, tools, llm_params.get("model"))
     for _llm_attempt in range(_MAX_LLM_RETRIES):
         try:
-            response = await acompletion(
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-                stream=True,
-                stream_options={"include_usage": True},
-                timeout=600,
-                **llm_params,
-            )
+            async with use_custom_inference_openai_key_env(
+                session.config.model_name, llm_params
+            ):
+                response = await acompletion(
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    stream=True,
+                    stream_options={"include_usage": True},
+                    timeout=600,
+                    **llm_params,
+                )
             break
         except ContextWindowExceededError:
             raise
@@ -397,14 +400,17 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
     messages, tools = with_prompt_caching(messages, tools, llm_params.get("model"))
     for _llm_attempt in range(_MAX_LLM_RETRIES):
         try:
-            response = await acompletion(
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-                stream=False,
-                timeout=600,
-                **llm_params,
-            )
+            async with use_custom_inference_openai_key_env(
+                session.config.model_name, llm_params
+            ):
+                response = await acompletion(
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    stream=False,
+                    timeout=600,
+                    **llm_params,
+                )
             break
         except ContextWindowExceededError:
             raise

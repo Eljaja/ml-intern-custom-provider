@@ -1,0 +1,43 @@
+# OpenAI-compatible API + agent; base image from NVIDIA (CUDA userland + drivers via host / --gpus).
+# Python is installed in-container — useful if you add GPU PyTorch/flash-attn later.
+ARG CUDA_IMAGE=12.4.1-runtime-ubuntu22.04
+FROM nvidia/cuda:${CUDA_IMAGE}
+
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        software-properties-common \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3.12 \
+        python3.12-venv \
+        python3.12-dev \
+    && curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && mv /root/.local/bin/uv /usr/local/bin/uv \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV UV_LINK_MODE=copy
+
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+COPY agent ./agent
+COPY configs ./configs
+COPY backend ./backend
+
+# Install the hf-agent project (includes `agent` package) and backend deps
+RUN uv sync --frozen --no-dev
+
+ENV PATH="/app/.venv/bin:${PATH}" \
+    PYTHONUNBUFFERED=1
+
+# FastAPI is started from the backend package
+WORKDIR /app/backend
+
+EXPOSE 7860
+
+# PORT can be set by the orchestrator; default 7860 matches local dev
+CMD ["/bin/sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-7860}"]

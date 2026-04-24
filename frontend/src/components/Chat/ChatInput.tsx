@@ -1,7 +1,6 @@
 import { useState, useCallback, useEffect, useRef, KeyboardEvent } from 'react';
-import { Box, TextField, IconButton, CircularProgress, Typography, Menu, MenuItem, ListItemIcon, ListItemText, Chip } from '@mui/material';
+import { Box, TextField, IconButton, CircularProgress } from '@mui/material';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
-import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import StopIcon from '@mui/icons-material/Stop';
 import { apiFetch } from '@/utils/api';
 import { useUserQuota } from '@/hooks/useUserQuota';
@@ -57,10 +56,6 @@ const MODEL_OPTIONS: ModelOption[] = [
   },
 ];
 
-const findModelByPath = (path: string): ModelOption | undefined => {
-  return MODEL_OPTIONS.find(m => m.modelPath === path || path?.includes(m.id));
-};
-
 interface ChatInputProps {
   sessionId?: string;
   onSend: (text: string) => void;
@@ -76,37 +71,13 @@ const firstFreeModel = () => MODEL_OPTIONS.find(m => !isClaudeModel(m)) ?? MODEL
 export default function ChatInput({ sessionId, onSend, onStop, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const [selectedModelId, setSelectedModelId] = useState<string>(MODEL_OPTIONS[0].id);
-  const [modelAnchorEl, setModelAnchorEl] = useState<null | HTMLElement>(null);
   const { quota, refresh: refreshQuota } = useUserQuota();
-  // The daily-cap dialog is triggered from two places: (a) a 429 returned
-  // from the chat transport when the user tries to send on Opus over cap —
-  // surfaced via the agent-store flag — and (b) nothing else right now
-  // (switching models is free). Keeping the open state in the store means
-  // the hook layer can flip it without threading props through.
+  // Daily-cap dialog: opened when a 429 from the chat transport indicates
+  // Opus quota is exhausted. Open state is in the store so the hook layer
+  // can flip it without extra props.
   const claudeQuotaExhausted = useAgentStore((s) => s.claudeQuotaExhausted);
   const setClaudeQuotaExhausted = useAgentStore((s) => s.setClaudeQuotaExhausted);
   const lastSentRef = useRef<string>('');
-
-  // Model is per-session: fetch this tab's current model every time the
-  // session changes. Other tabs keep their own selections independently.
-  useEffect(() => {
-    if (!sessionId) return;
-    let cancelled = false;
-    apiFetch(`/api/session/${sessionId}`)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (cancelled) return;
-        if (data?.model) {
-          const model = findModelByPath(data.model);
-          if (model) setSelectedModelId(model.id);
-        }
-      })
-      .catch(() => { /* ignore */ });
-    return () => { cancelled = true; };
-  }, [sessionId]);
-
-  const selectedModel = MODEL_OPTIONS.find(m => m.id === selectedModelId) || MODEL_OPTIONS[0];
 
   // Auto-focus the textarea when the session becomes ready
   useEffect(() => {
@@ -148,26 +119,6 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
     [handleSend]
   );
 
-  const handleModelClick = (event: React.MouseEvent<HTMLElement>) => {
-    setModelAnchorEl(event.currentTarget);
-  };
-
-  const handleModelClose = () => {
-    setModelAnchorEl(null);
-  };
-
-  const handleSelectModel = async (model: ModelOption) => {
-    handleModelClose();
-    if (!sessionId) return;
-    try {
-      const res = await apiFetch(`/api/session/${sessionId}/model`, {
-        method: 'POST',
-        body: JSON.stringify({ model: model.modelPath }),
-      });
-      if (res.ok) setSelectedModelId(model.id);
-    } catch { /* ignore */ }
-  };
-
   // Dialog close: just clear the flag. The typed text is already restored.
   const handleCapDialogClose = useCallback(() => {
     setClaudeQuotaExhausted(false);
@@ -186,7 +137,6 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
         body: JSON.stringify({ model: free.modelPath }),
       });
       if (res.ok) {
-        setSelectedModelId(free.id);
         const retryText = lastSentRef.current;
         if (retryText) {
           onSend(retryText);
@@ -196,16 +146,6 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
       }
     } catch { /* ignore */ }
   }, [sessionId, onSend, setClaudeQuotaExhausted]);
-
-  // Hide the chip until the user has actually burned quota — an unused
-  // Opus session shouldn't populate a counter.
-  const claudeChip = (() => {
-    if (!quota || quota.claudeUsedToday === 0) return null;
-    if (quota.plan === 'free') {
-      return quota.claudeRemaining > 0 ? 'Free today' : 'Pro only';
-    }
-    return `${quota.claudeUsedToday}/${quota.claudeDailyCap} today`;
-  })();
 
   return (
     <Box
@@ -313,121 +253,6 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
             </IconButton>
           )}
         </Box>
-
-        {/* Powered By Badge */}
-        <Box
-          onClick={handleModelClick}
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            mt: 1.5,
-            gap: 0.8,
-            opacity: 0.6,
-            cursor: 'pointer',
-            transition: 'opacity 0.2s',
-            '&:hover': {
-              opacity: 1
-            }
-          }}
-        >
-          <Typography variant="caption" sx={{ fontSize: '10px', color: 'var(--muted-text)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500 }}>
-            powered by
-          </Typography>
-          <img
-            src={selectedModel.avatarUrl}
-            alt={selectedModel.name}
-            style={{ height: '14px', width: '14px', objectFit: 'contain', borderRadius: '2px' }}
-          />
-          <Typography variant="caption" sx={{ fontSize: '10px', color: 'var(--text)', fontWeight: 600, letterSpacing: '0.02em' }}>
-            {selectedModel.name}
-          </Typography>
-          <ArrowDropDownIcon sx={{ fontSize: '14px', color: 'var(--muted-text)' }} />
-        </Box>
-
-        {/* Model Selection Menu */}
-        <Menu
-          anchorEl={modelAnchorEl}
-          open={Boolean(modelAnchorEl)}
-          onClose={handleModelClose}
-          anchorOrigin={{
-            vertical: 'top',
-            horizontal: 'center',
-          }}
-          transformOrigin={{
-            vertical: 'bottom',
-            horizontal: 'center',
-          }}
-          slotProps={{
-            paper: {
-              sx: {
-                bgcolor: 'var(--panel)',
-                border: '1px solid var(--divider)',
-                mb: 1,
-                maxHeight: '400px',
-              }
-            }
-          }}
-        >
-          {MODEL_OPTIONS.map((model) => (
-            <MenuItem
-              key={model.id}
-              onClick={() => handleSelectModel(model)}
-              selected={selectedModelId === model.id}
-              sx={{
-                py: 1.5,
-                '&.Mui-selected': {
-                  bgcolor: 'rgba(255,255,255,0.05)',
-                }
-              }}
-            >
-              <ListItemIcon>
-                <img
-                  src={model.avatarUrl}
-                  alt={model.name}
-                  style={{ width: 24, height: 24, borderRadius: '4px', objectFit: 'cover' }}
-                />
-              </ListItemIcon>
-              <ListItemText
-                primary={
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    {model.name}
-                    {model.recommended && (
-                      <Chip
-                        label="Recommended"
-                        size="small"
-                        sx={{
-                          height: '18px',
-                          fontSize: '10px',
-                          bgcolor: 'var(--accent-yellow)',
-                          color: '#000',
-                          fontWeight: 600,
-                        }}
-                      />
-                    )}
-                    {isClaudeModel(model) && claudeChip && (
-                      <Chip
-                        label={claudeChip}
-                        size="small"
-                        sx={{
-                          height: '18px',
-                          fontSize: '10px',
-                          bgcolor: 'rgba(255,255,255,0.08)',
-                          color: 'var(--muted-text)',
-                          fontWeight: 600,
-                        }}
-                      />
-                    )}
-                  </Box>
-                }
-                secondary={model.description}
-                secondaryTypographyProps={{
-                  sx: { fontSize: '12px', color: 'var(--muted-text)' }
-                }}
-              />
-            </MenuItem>
-          ))}
-        </Menu>
 
         <ClaudeCapDialog
           open={claudeQuotaExhausted}

@@ -64,7 +64,8 @@ def _load_project_env() -> None:
     Also loads ``.env`` from the current working directory (without overriding) so WSL
     and one-off launches from the repo root still pick up ``CUSTOM_INFERENCE_*`` even
     when ``__file__`` resolves under ``.venv/site-packages``."""
-    load_dotenv(_PROJECT_ROOT / ".env")
+    # Prefer this repo's local .env over inherited parent-process variables.
+    load_dotenv(_PROJECT_ROOT / ".env", override=True)
     load_dotenv(Path.cwd() / ".env", override=False)
     load_dotenv(override=False)
 

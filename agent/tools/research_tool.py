@@ -14,7 +14,7 @@ from typing import Any
 from litellm import Message, acompletion
 
 from agent.core.doom_loop import check_for_doom_loop
-from agent.core.llm_params import _resolve_llm_params
+from agent.core.llm_params import _resolve_llm_params, use_custom_inference_openai_key_env
 from agent.core.prompt_caching import with_prompt_caching
 from agent.core.session import Event
 
@@ -325,13 +325,14 @@ async def research_handler(
             ))
             try:
                 _msgs, _ = with_prompt_caching(messages, None, llm_params.get("model"))
-                response = await acompletion(
-                    messages=_msgs,
-                    tools=None,  # no tools — force text response
-                    stream=False,
-                    timeout=120,
-                    **llm_params,
-                )
+                async with use_custom_inference_openai_key_env(research_model, llm_params):
+                    response = await acompletion(
+                        messages=_msgs,
+                        tools=None,  # no tools — force text response
+                        stream=False,
+                        timeout=120,
+                        **llm_params,
+                    )
                 content = response.choices[0].message.content or ""
                 return content or "Research context exhausted — no summary produced.", bool(content)
             except Exception:
@@ -353,14 +354,15 @@ async def research_handler(
             _msgs, _tools = with_prompt_caching(
                 messages, tool_specs if tool_specs else None, llm_params.get("model")
             )
-            response = await acompletion(
-                messages=_msgs,
-                tools=_tools,
-                tool_choice="auto",
-                stream=False,
-                timeout=120,
-                **llm_params,
-            )
+            async with use_custom_inference_openai_key_env(research_model, llm_params):
+                response = await acompletion(
+                    messages=_msgs,
+                    tools=_tools,
+                    tool_choice="auto",
+                    stream=False,
+                    timeout=120,
+                    **llm_params,
+                )
         except Exception as e:
             logger.error("Research sub-agent LLM error: %s", e)
             return f"Research agent LLM error: {e}", False
@@ -452,13 +454,14 @@ async def research_handler(
     ))
     try:
         _msgs, _ = with_prompt_caching(messages, None, llm_params.get("model"))
-        response = await acompletion(
-            messages=_msgs,
-            tools=None,
-            stream=False,
-            timeout=120,
-            **llm_params,
-        )
+        async with use_custom_inference_openai_key_env(research_model, llm_params):
+            response = await acompletion(
+                messages=_msgs,
+                tools=None,
+                stream=False,
+                timeout=120,
+                **llm_params,
+            )
         content = response.choices[0].message.content or ""
         if content:
             return content, True

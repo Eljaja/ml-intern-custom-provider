@@ -1,0 +1,33 @@
+# Git
+.git
+.gitignore
+
+# Python
+.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/*.pyo
+**/.mypy_cache
+**/.ruff_cache
+*.egg-info
+dist
+build
+
+# Node / front
+frontend/node_modules
+frontend/dist
+**/node_modules
+
+# IDE / local
+.vscode
+.idea
+*.log
+
+# Do not ship local secrets in build context; pass at runtime: docker compose --env-file .env
+# .env
+
+# Large / dev-only
+**/*.pyc
+session_logs
+static

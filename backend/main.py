@@ -12,8 +12,10 @@ from fastapi.staticfiles import StaticFiles
 from routes.agent import router as agent_router
 from routes.auth import router as auth_router
 
-# Load .env from project root (parent directory)
-load_dotenv(Path(__file__).parent.parent / ".env")
+# Load project-local .env first and let it override inherited process env.
+load_dotenv(Path(__file__).parent.parent / ".env", override=True)
+load_dotenv(Path.cwd() / ".env", override=False)
+load_dotenv(override=False)
 
 # Configure logging
 logging.basicConfig(
@@ -38,15 +40,30 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware for development
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # Vite dev server
+def _cors_allowed_origins() -> list[str]:
+    """Default dev origins; extend with CORS_ORIGINS= comma-separated (Docker, reverse proxy)."""
+    out = [
+        "http://localhost:5173",
+        "http://localhost:5174",  # Vite dev (default port; see vite.config)
         "http://localhost:3000",
         "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
         "http://127.0.0.1:3000",
-    ],
+    ]
+    extra = (os.environ.get("CORS_ORIGINS") or "").strip()
+    if not extra:
+        return out
+    for raw in extra.split(","):
+        o = raw.strip().rstrip("/")
+        if o and o not in out:
+            out.append(o)
+    return out
+
+
+# CORS middleware (dev + optional Docker)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

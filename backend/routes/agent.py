@@ -32,7 +32,7 @@ from session_manager import MAX_SESSIONS, AgentSession, SessionCapacityError, se
 
 import user_quotas
 
-from agent.core.llm_params import _resolve_llm_params
+from agent.core.llm_params import _resolve_llm_params, use_custom_inference_openai_key_env
 
 logger = logging.getLogger(__name__)
 
@@ -168,12 +168,13 @@ async def llm_health_check() -> LLMHealthResponse:
     model = session_manager.config.model_name
     try:
         llm_params = _resolve_llm_params(model, reasoning_effort="high")
-        await acompletion(
-            messages=[{"role": "user", "content": "hi"}],
-            max_tokens=1,
-            timeout=10,
-            **llm_params,
-        )
+        async with use_custom_inference_openai_key_env(model, llm_params):
+            await acompletion(
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=1,
+                timeout=10,
+                **llm_params,
+            )
         return LLMHealthResponse(status="ok", model=model)
     except Exception as e:
         err_str = str(e).lower()

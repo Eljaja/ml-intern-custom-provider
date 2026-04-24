@@ -106,11 +106,11 @@ export default function ClaudeCapDialog({
             fontSize: '0.82rem',
             px: 2.5,
             bgcolor: 'var(--accent-yellow)',
-            color: '#000',
+            color: '#fff',
             textTransform: 'none',
             fontWeight: 700,
             boxShadow: 'none',
-            '&:hover': { bgcolor: '#FFB340', boxShadow: 'none' },
+            '&:hover': { bgcolor: 'primary.light', boxShadow: 'none' },
           }}
         >
           Upgrade to Pro

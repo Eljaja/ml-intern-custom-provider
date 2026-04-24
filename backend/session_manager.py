@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -184,7 +185,18 @@ class SessionManager:
 
         def _create_session_sync():
             t0 = _time.monotonic()
-            tool_router = ToolRouter(self.config.mcpServers, hf_token=hf_token)
+            # CLI runs with local_mode=True (bash/read/write on the dev machine). The web
+            # backend defaults to remote HuggingFace sandboxes. Set AGENT_LOCAL_MODE=1 in
+            # the server environment for a trusted, single-user local setup — this runs
+            # shell commands on the *machine hosting uvicorn* with that process cwd.
+            local_mode = os.environ.get("AGENT_LOCAL_MODE", "").lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            tool_router = ToolRouter(
+                self.config.mcpServers, hf_token=hf_token, local_mode=local_mode
+            )
             # Deep-copy config so each session's model switches independently —
             # tab A picking GLM doesn't flip tab B off Claude.
             session_config = self.config.model_copy(deep=True)
@@ -192,7 +204,7 @@ class SessionManager:
                 session_config.model_name = model
             session = Session(
                 event_queue, config=session_config, tool_router=tool_router,
-                hf_token=hf_token,
+                hf_token=hf_token, local_mode=local_mode,
             )
             t1 = _time.monotonic()
             logger.info(f"Session initialized in {t1 - t0:.2f}s")

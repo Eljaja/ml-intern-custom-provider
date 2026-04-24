@@ -17,7 +17,8 @@ import { apiFetch } from '@/utils/api';
 import { isInIframe, triggerLogin } from '@/hooks/useAuth';
 import { useOrgMembership } from '@/hooks/useOrgMembership';
 
-const HF_ORANGE = '#FF9D00';
+const BRAND_PURPLE = '#7B3FE4';
+const BRAND_PURPLE_HOVER = '#9B5DF5';
 const ORG_JOIN_URL =
   'https://huggingface.co/organizations/ml-agent-explorers/share/GzPMJUivoFPlfkvFtIqEouZKSytatKQSZT';
 
@@ -57,7 +58,7 @@ function StepIndicator({ status, stepNumber }: { status: StepStatus; stepNumber:
         fontSize: '0.8rem',
         fontWeight: 700,
         ...(status === 'active'
-          ? { bgcolor: HF_ORANGE, color: '#000' }
+          ? { bgcolor: BRAND_PURPLE, color: '#fff' }
           : { bgcolor: 'transparent', border: '2px solid var(--border)', color: 'var(--muted-text)' }),
       }}
     >
@@ -90,10 +91,10 @@ function ChecklistStep({
     textDecoration: 'none',
     ...(status === 'active'
       ? {
-          bgcolor: HF_ORANGE,
-          color: '#000',
-          boxShadow: '0 2px 12px rgba(255, 157, 0, 0.25)',
-          '&:hover': { bgcolor: '#FFB340', boxShadow: '0 4px 20px rgba(255, 157, 0, 0.4)' },
+          bgcolor: BRAND_PURPLE,
+          color: '#fff',
+          boxShadow: '0 2px 12px rgba(123, 63, 228, 0.35)',
+          '&:hover': { bgcolor: BRAND_PURPLE_HOVER, boxShadow: '0 4px 20px rgba(123, 63, 228, 0.45)' },
         }
       : {
           bgcolor: 'rgba(255,255,255,0.04)',
@@ -115,7 +116,7 @@ function ChecklistStep({
           status === 'completed'
             ? 'var(--accent-green)'
             : status === 'active'
-              ? HF_ORANGE
+              ? BRAND_PURPLE
               : 'transparent',
         ...(!isLast && { borderBottom: '1px solid var(--border)' }),
         opacity: status === 'locked' ? 0.55 : 1,
@@ -271,7 +272,7 @@ export default function WelcomeScreen() {
   const joinOrgStatus: StepStatus = isOrgMember ? 'completed' : isAuthenticated ? 'active' : 'locked';
   const startStatus: StepStatus = isAuthenticated && isOrgMember ? 'active' : 'locked';
 
-  // Space URL for iframe "Open ML Intern" step
+  // Space URL for iframe "open full app" step
   const spaceHost =
     typeof window !== 'undefined'
       ? window.location.hostname.includes('.hf.space')
@@ -292,27 +293,19 @@ export default function WelcomeScreen() {
         py: 8,
       }}
     >
-      {/* Logo */}
       <Box
         component="img"
-        src="/smolagents.webp"
-        alt="smolagents"
-        sx={{ width: 80, height: 80, mb: 2.5, display: 'block' }}
-      />
-
-      {/* Title */}
-      <Typography
-        variant="h2"
+        src="/singularity-compute-logo.png"
+        alt="Singularity Compute"
         sx={{
-          fontWeight: 800,
-          color: 'var(--text)',
-          mb: 1,
-          letterSpacing: '-0.02em',
-          fontSize: { xs: '1.8rem', md: '2.4rem' },
+          width: '100%',
+          maxWidth: 540,
+          height: 'auto',
+          mb: 3,
+          display: 'block',
+          objectFit: 'contain',
         }}
-      >
-        ML Intern
-      </Typography>
+      />
 
       {/* Description */}
       <Typography
@@ -370,11 +363,11 @@ export default function WelcomeScreen() {
             />
             <ChecklistStep
               stepNumber={2}
-              title="Open ML Intern"
+              title="Open Singularity Compute"
               description="Open the agent in a full browser tab to get started."
               status={isOrgMember ? 'active' : 'locked'}
               lockedReason="Join the organization first."
-              actionLabel="Open ML Intern"
+              actionLabel="Open Singularity Compute"
               actionIcon={<OpenInNewIcon sx={{ fontSize: 16 }} />}
               actionHref={spaceHost}
               isLast
@@ -438,7 +431,7 @@ export default function WelcomeScreen() {
             mt: 3,
             maxWidth: 400,
             fontSize: '0.8rem',
-            borderColor: HF_ORANGE,
+            borderColor: BRAND_PURPLE,
             color: 'var(--text)',
           }}
         >

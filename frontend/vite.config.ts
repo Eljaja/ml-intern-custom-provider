@@ -10,7 +10,9 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    // 5173 often collides on Windows (another process on [::1]:5173 — e.g. IDE), so localhost:5173 404s while 127.0.0.1 works.
+    port: 5174,
+    strictPort: false,
     proxy: {
       '/api': {
         target: 'http://localhost:7860',

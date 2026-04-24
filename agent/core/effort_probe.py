@@ -26,7 +26,11 @@ from dataclasses import dataclass
 
 from litellm import acompletion
 
-from agent.core.llm_params import UnsupportedEffortError, _resolve_llm_params
+from agent.core.llm_params import (
+    UnsupportedEffortError,
+    _resolve_llm_params,
+    use_custom_inference_openai_key_env,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -170,15 +174,16 @@ async def probe_effort(
 
         attempts += 1
         try:
-            await asyncio.wait_for(
-                acompletion(
-                    messages=[{"role": "user", "content": "ping"}],
-                    max_tokens=_PROBE_MAX_TOKENS,
-                    stream=False,
-                    **params,
-                ),
-                timeout=_PROBE_TIMEOUT,
-            )
+            async with use_custom_inference_openai_key_env(model_name, params):
+                await asyncio.wait_for(
+                    acompletion(
+                        messages=[{"role": "user", "content": "ping"}],
+                        max_tokens=_PROBE_MAX_TOKENS,
+                        stream=False,
+                        **params,
+                    ),
+                    timeout=_PROBE_TIMEOUT,
+                )
         except Exception as e:
             last_error = e
             if _is_thinking_unsupported(e):

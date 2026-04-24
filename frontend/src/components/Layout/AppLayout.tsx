@@ -217,7 +217,7 @@ export default function AppLayout() {
       >
         {/* -- Top Header Bar --------------------------------------------- */}
         <Box sx={{
-          height: { xs: 52, md: 60 },
+          height: { xs: 56, md: 68 },
           px: { xs: 1, md: 2 },
           display: 'flex',
           alignItems: 'center',
@@ -231,24 +231,28 @@ export default function AppLayout() {
             {isLeftSidebarOpen && !isMobile ? <ChevronLeftIcon /> : <MenuIcon />}
           </IconButton>
 
-          <Box sx={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 0.75 }}>
+          <Box
+            sx={{
+              flex: 1,
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              minWidth: 0,
+            }}
+          >
             <Box
               component="img"
-              src="/smolagents.webp"
-              alt="smolagents"
-              sx={{ width: { xs: 20, md: 22 }, height: { xs: 20, md: 22 } }}
-            />
-            <Typography
-              variant="subtitle1"
+              src="/singularity-compute-logo.png"
+              alt="Singularity Compute"
               sx={{
-                fontWeight: 700,
-                color: 'var(--text)',
-                letterSpacing: '-0.01em',
-                fontSize: { xs: '0.88rem', md: '0.95rem' },
+                height: { xs: 42, md: 48 },
+                width: 'auto',
+                maxWidth: { xs: 240, sm: 300, md: 330 },
+                objectFit: 'contain',
+                display: 'block',
+                flexShrink: 0,
               }}
-            >
-              ML Intern
-            </Typography>
+            />
           </Box>
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>

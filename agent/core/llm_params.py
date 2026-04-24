@@ -6,6 +6,26 @@ creating circular imports.
 """
 
 import os
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+
+def _load_inference_dotenv() -> None:
+    """Load project ``.env`` even when the process is started with another cwd
+    (e.g. uvicorn from a parent dir) so ``CUSTOM_INFERENCE_*`` is visible
+    before the first :func:`_custom_inference_config` check."""
+    try:
+        from dotenv import load_dotenv
+    except Exception:
+        return
+    project_root = Path(__file__).resolve().parents[2]  # agent/core/llm_params.py -> repo root
+    # Project-local .env should beat inherited env like stale test keys.
+    load_dotenv(project_root / ".env", override=True)
+    load_dotenv(Path.cwd() / ".env", override=False)
+    load_dotenv(override=False)
+
+
+_load_inference_dotenv()
 
 
 def _patch_litellm_effort_validation() -> None:
@@ -90,10 +110,15 @@ def _custom_inference_config(
     """If ``model_name`` is routed to ``CUSTOM_INFERENCE_API_*``, return
     ``(api_base, api_key, base_model_id)``; otherwise ``None``.
     """
+    _load_inference_dotenv()
     custom_base = (os.environ.get("CUSTOM_INFERENCE_API_BASE") or "").strip().rstrip(
         "/"
     )
-    custom_key = (os.environ.get("CUSTOM_INFERENCE_API_KEY") or "").strip()
+    raw_key = (os.environ.get("CUSTOM_INFERENCE_API_KEY") or "").strip()
+    # Avoid "Bearer …" duplicated by LiteLLM; strip quotes / BOM from .env pastes
+    custom_key = (
+        raw_key.removeprefix("Bearer ").strip().strip('"').strip("'").strip().lstrip("\ufeff")
+    )
     if not (custom_base and custom_key):
         return None
     base_id = model_name.removeprefix("huggingface/").split(":", 1)[0]
@@ -101,7 +126,25 @@ def _custom_inference_config(
     if not custom_model_env:
         custom_model_env = "minimax/minimax-m2.7"
     custom_ids = {m.strip() for m in custom_model_env.split(",") if m.strip()}
-    if base_id not in custom_ids:
+
+    def _matches_allowlist(m_id: str, allowed: set[str]) -> bool:
+        """Minimax appears as ``minimax/...`` or ``MiniMaxAI/MiniMax-M2.7`` on the Hub — compare case-insensitively."""
+        m_cf = m_id.casefold()
+        allowed_cf = {x.casefold() for x in allowed}
+        if m_cf in allowed_cf:
+            return True
+        tail = m_id.rsplit("/", 1)[-1] if m_id else ""
+        tail_cf = tail.casefold()
+        for a in allowed:
+            if not a:
+                continue
+            acf = a.casefold()
+            a_tail_cf = a.rsplit("/", 1)[-1].casefold()
+            if acf == tail_cf or a_tail_cf == tail_cf or m_cf.endswith("/" + acf):
+                return True
+        return False
+
+    if not _matches_allowlist(base_id, custom_ids):
         return None
     return (custom_base, custom_key, base_id)
 
@@ -109,6 +152,36 @@ def _custom_inference_config(
 def model_uses_custom_inference_endpoint(model_name: str) -> bool:
     """True when the active LLM is served via ``CUSTOM_INFERENCE_API_*`` (not HF router)."""
     return _custom_inference_config(model_name) is not None
+
+
+@asynccontextmanager
+async def use_custom_inference_openai_key_env(model_name: str, llm_params: dict):
+    """Set ``OPENAI_API_KEY`` for the duration of a LiteLLM call if this model
+    uses a custom OpenAI-compatible base.
+
+    Some LiteLLM 1.8x code paths re-resolve the key from
+    :func:`litellm.get_secret` / the global key and drop the per-request
+    :attr:`api_key` when talking to a non-OpenAI host — the gateway then
+    sees no ``Bearer`` and returns 401. Mirroring the key into
+    :envvar:`OPENAI_API_KEY` for the await only fixes that without changing
+    unrelated routes that pass explicit ``api_key`` (e.g. title generation).
+    """
+    if not model_uses_custom_inference_endpoint(model_name):
+        yield
+        return
+    k = (llm_params.get("api_key") or "").strip()
+    if not k:
+        yield
+        return
+    old = os.environ.get("OPENAI_API_KEY")
+    try:
+        os.environ["OPENAI_API_KEY"] = k
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("OPENAI_API_KEY", None)
+        else:
+            os.environ["OPENAI_API_KEY"] = old
 
 
 def _resolve_llm_params(
@@ -211,10 +284,18 @@ def _resolve_llm_params(
     ci = _custom_inference_config(model_name)
     if ci is not None:
         custom_base, custom_key, base_id = ci
+        # LiteLLM's openai route uses litellm.utils.get_api_key(), which falls back to
+        # OPENAI_API_KEY if the per-request key is lost; some gateways also require an
+        # explicit Authorization header for custom api_base.
+        auth = {"Authorization": f"Bearer {custom_key}"}
+        # ``headers`` and ``extra_headers`` both flow through LiteLLM (main + OpenAI
+        # adapter); set both so streaming/non-streaming paths still send ``Bearer``.
         custom_params: dict = {
             "model": f"openai/{base_id}",
             "api_base": custom_base,
             "api_key": custom_key,
+            "headers": auth,
+            "extra_headers": auth,
         }
         if reasoning_effort:
             hf_level = "low" if reasoning_effort == "minimal" else reasoning_effort
