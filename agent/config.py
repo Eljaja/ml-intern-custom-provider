@@ -6,8 +6,9 @@ from typing import Any, Union
 
 from dotenv import load_dotenv
 
-# Project root: two levels up from this file (agent/config.py -> project root)
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from agent.project_root import find_project_root
+
+_PROJECT_ROOT = find_project_root()
 from fastmcp.mcp_config import (
     RemoteMCPServer,
     StdioMCPServer,

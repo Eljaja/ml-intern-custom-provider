@@ -32,6 +32,19 @@ GITHUB_TOKEN=<github-personal-access-token>
 ```
 If no `HF_TOKEN` is set, the CLI will prompt you to paste one on first launch. To get a GITHUB_TOKEN follow the tutorial [here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token).
 
+**Custom OpenAI-compatible LLM (optional):** to send specific models to a private endpoint (not the Hugging Face router), set in `.env`:
+
+```bash
+CUSTOM_INFERENCE_API_BASE=https://your-host.example/v1
+CUSTOM_INFERENCE_API_KEY=sk-...
+# Comma-separated model base ids; if omitted, defaults to minimax/minimax-m2.7
+# CUSTOM_INFERENCE_MODEL=minimax/minimax-m2.7
+```
+
+Use the same id with `--model` or `model_name` in `configs/main_agent_config.json`. Other `org/model` names continue to use the HF router unless listed in `CUSTOM_INFERENCE_MODEL`.
+
+When the **active** `model_name` is routed to `CUSTOM_INFERENCE_*`, a **Hugging Face token is not required** to start the CLI (Hub tools, datasets, and MCP may still need `HF_TOKEN` to work). Otherwise set `HF_TOKEN` as above.
+
 ### Usage
 
 **Interactive mode** (start a chat session):

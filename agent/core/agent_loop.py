@@ -199,7 +199,9 @@ def _friendly_error_message(error: Exception) -> str | None:
             "To fix this, set the API key for your model provider:\n"
             "  • Anthropic:   export ANTHROPIC_API_KEY=sk-...\n"
             "  • OpenAI:      export OPENAI_API_KEY=sk-...\n"
-            "  • HF Router:   export HF_TOKEN=hf_...\n\n"
+            "  • HF Router:   export HF_TOKEN=hf_...\n"
+            "  • Custom OAI:  export CUSTOM_INFERENCE_API_KEY=... "
+            "and CUSTOM_INFERENCE_API_BASE=...\n\n"
             "You can also add it to a .env file in the project root.\n"
             "To switch models, use the /model command."
         )
@@ -271,7 +273,7 @@ async def _cleanup_on_cancel(session: Session) -> None:
 
     # Cancel running HF jobs
     job_ids = list(session._running_job_ids)
-    if job_ids:
+    if job_ids and session.hf_token:
         from huggingface_hub import HfApi
 
         api = HfApi(token=session.hf_token)

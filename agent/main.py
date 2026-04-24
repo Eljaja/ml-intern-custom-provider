@@ -18,9 +18,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 import litellm
+from dotenv import load_dotenv
 from prompt_toolkit import PromptSession
 
 from agent.config import load_config
+from agent.core.llm_params import model_uses_custom_inference_endpoint
+from agent.project_root import find_project_root
 from agent.core.agent_loop import submission_loop
 from agent.core import model_switcher
 from agent.core.session import OpType
@@ -49,6 +52,22 @@ litellm.drop_params = True
 # Suppress the "Give Feedback / Get Help" banner LiteLLM prints to stderr
 # on every error — users don't need it, and our friendly errors cover the case.
 litellm.suppress_debug_info = True
+
+_PROJECT_ROOT = find_project_root()
+
+
+def _load_project_env() -> None:
+    """Load ``.env`` from project root before any code reads ``HF_TOKEN`` (same as
+    ``load_config``). Interactive mode previously called ``_get_hf_token()`` before
+    ``load_config()``, so ``HF_TOKEN=...`` in ``.env`` was never applied.
+
+    Also loads ``.env`` from the current working directory (without overriding) so WSL
+    and one-off launches from the repo root still pick up ``CUSTOM_INFERENCE_*`` even
+    when ``__file__`` resolves under ``.venv/site-packages``."""
+    load_dotenv(_PROJECT_ROOT / ".env")
+    load_dotenv(Path.cwd() / ".env", override=False)
+    load_dotenv(override=False)
+
 
 def _safe_get_args(arguments: dict) -> dict:
     """Safely extract args dict from arguments, handling cases where LLM passes string."""
@@ -809,26 +828,50 @@ async def _handle_slash_command(
 async def main():
     """Interactive chat with the agent"""
 
+    _load_project_env()
+
+    config_path = _PROJECT_ROOT / "configs" / "main_agent_config.json"
+    config = load_config(config_path)
+
     # Clear screen
     os.system("clear" if os.name != "nt" else "cls")
 
     # Create prompt session for input (needed early for token prompt)
     prompt_session = PromptSession()
 
-    # HF token — required, prompt if missing
+    # HF token — required for Hub tools; optional if LLM uses CUSTOM_INFERENCE only
     hf_token = _get_hf_token()
     if not hf_token:
-        hf_token = await _prompt_and_save_hf_token(prompt_session)
+        if model_uses_custom_inference_endpoint(config.model_name):
+            print(
+                "No HF_TOKEN: using custom LLM only; Hub tools, datasets, and MCP may fail.\n",
+                file=sys.stderr,
+            )
+        elif (
+            (os.environ.get("CUSTOM_INFERENCE_API_BASE") or "").strip()
+            and (os.environ.get("CUSTOM_INFERENCE_API_KEY") or "").strip()
+        ):
+            print(
+                f"CUSTOM_INFERENCE_* is set but model_name={config.model_name!r} does not "
+                "match CUSTOM_INFERENCE_MODEL (or huggingface/ prefix with :tag). "
+                "Fix configs/main_agent_config.json or .env, or set HF_TOKEN.\n",
+                file=sys.stderr,
+            )
+            hf_token = await _prompt_and_save_hf_token(prompt_session)
+        else:
+            hf_token = await _prompt_and_save_hf_token(prompt_session)
 
     # Resolve username for banner
     hf_user = None
-    try:
-        from huggingface_hub import HfApi
-        hf_user = HfApi(token=hf_token).whoami().get("name")
-    except Exception:
-        pass
+    if hf_token:
+        try:
+            from huggingface_hub import HfApi
 
-    print_banner(hf_user=hf_user)
+            hf_user = HfApi(token=hf_token).whoami().get("name")
+        except Exception:
+            pass
+
+    print_banner(model=config.model_name, hf_user=hf_user)
 
     # Pre-warm the HF router catalog in the background so /model switches
     # don't block on a network fetch.
@@ -843,10 +886,6 @@ async def main():
     turn_complete_event = asyncio.Event()
     turn_complete_event.set()
     ready_event = asyncio.Event()
-
-    # Start agent loop in background
-    config_path = Path(__file__).parent.parent / "configs" / "main_agent_config.json"
-    config = load_config(config_path)
 
     # Create tool router with local mode
     tool_router = ToolRouter(config.mcpServers, hf_token=hf_token, local_mode=True)
@@ -1037,19 +1076,28 @@ async def headless_main(
 
     logging.basicConfig(level=logging.WARNING)
 
-    hf_token = _get_hf_token()
-    if not hf_token:
-        print("ERROR: No HF token found. Set HF_TOKEN or run `huggingface-cli login`.", file=sys.stderr)
-        sys.exit(1)
+    _load_project_env()
 
-    print(f"HF token loaded", file=sys.stderr)
-
-    config_path = Path(__file__).parent.parent / "configs" / "main_agent_config.json"
+    config_path = _PROJECT_ROOT / "configs" / "main_agent_config.json"
     config = load_config(config_path)
     config.yolo_mode = True  # Auto-approve everything in headless mode
 
     if model:
         config.model_name = model
+
+    hf_token = _get_hf_token()
+    if not hf_token:
+        if not model_uses_custom_inference_endpoint(config.model_name):
+            print(
+                "ERROR: No HF token and model is not on CUSTOM_INFERENCE. "
+                "Set HF_TOKEN, run `huggingface-cli login`, or set "
+                "CUSTOM_INFERENCE_API_BASE + CUSTOM_INFERENCE_API_KEY and use a "
+                "model listed in CUSTOM_INFERENCE_MODEL.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    else:
+        print("HF token loaded", file=sys.stderr)
 
     if max_iterations is not None:
         config.max_iterations = max_iterations

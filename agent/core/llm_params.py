@@ -84,6 +84,33 @@ class UnsupportedEffortError(ValueError):
     """
 
 
+def _custom_inference_config(
+    model_name: str,
+) -> tuple[str, str, str] | None:
+    """If ``model_name`` is routed to ``CUSTOM_INFERENCE_API_*``, return
+    ``(api_base, api_key, base_model_id)``; otherwise ``None``.
+    """
+    custom_base = (os.environ.get("CUSTOM_INFERENCE_API_BASE") or "").strip().rstrip(
+        "/"
+    )
+    custom_key = (os.environ.get("CUSTOM_INFERENCE_API_KEY") or "").strip()
+    if not (custom_base and custom_key):
+        return None
+    base_id = model_name.removeprefix("huggingface/").split(":", 1)[0]
+    custom_model_env = (os.environ.get("CUSTOM_INFERENCE_MODEL") or "").strip()
+    if not custom_model_env:
+        custom_model_env = "minimax/minimax-m2.7"
+    custom_ids = {m.strip() for m in custom_model_env.split(",") if m.strip()}
+    if base_id not in custom_ids:
+        return None
+    return (custom_base, custom_key, base_id)
+
+
+def model_uses_custom_inference_endpoint(model_name: str) -> bool:
+    """True when the active LLM is served via ``CUSTOM_INFERENCE_API_*`` (not HF router)."""
+    return _custom_inference_config(model_name) is not None
+
+
 def _resolve_llm_params(
     model_name: str,
     session_hf_token: str | None = None,
@@ -108,6 +135,12 @@ def _resolve_llm_params(
 
     • ``openai/<model>`` — ``reasoning_effort`` forwarded as a top-level
       kwarg (GPT-5 / o-series). LiteLLM uses the user's ``OPENAI_API_KEY``.
+
+    • If ``CUSTOM_INFERENCE_API_BASE`` and ``CUSTOM_INFERENCE_API_KEY`` are
+      set, and the model's base id (no ``:suffix``) is listed in
+      ``CUSTOM_INFERENCE_MODEL`` (comma-separated; default
+      ``minimax/minimax-m2.7`` if unset), requests go to that OpenAI-compatible
+      endpoint instead of the Hugging Face router.
 
     • Anything else is treated as a HuggingFace router id. We hit the
       auto-routing OpenAI-compatible endpoint at
@@ -173,6 +206,26 @@ def _resolve_llm_params(
             else:
                 params["reasoning_effort"] = reasoning_effort
         return params
+
+    # Optional OpenAI-compatible base URL (TGI, vLLM, or private proxy) — not HF Router.
+    ci = _custom_inference_config(model_name)
+    if ci is not None:
+        custom_base, custom_key, base_id = ci
+        custom_params: dict = {
+            "model": f"openai/{base_id}",
+            "api_base": custom_base,
+            "api_key": custom_key,
+        }
+        if reasoning_effort:
+            hf_level = "low" if reasoning_effort == "minimal" else reasoning_effort
+            if hf_level not in _HF_EFFORTS:
+                if strict:
+                    raise UnsupportedEffortError(
+                        f"Custom inference API doesn't accept effort={hf_level!r}"
+                    )
+            else:
+                custom_params["extra_body"] = {"reasoning_effort": hf_level}
+        return custom_params
 
     hf_model = model_name.removeprefix("huggingface/")
     api_key = (
