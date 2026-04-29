@@ -34,6 +34,7 @@ RESEARCH_TOOL_NAMES = {
     "fetch_hf_docs",
     "find_hf_api",
     "hf_papers",
+    "archive_search",
     "github_find_examples",
     "github_list_repos",
     "github_read_file",
@@ -98,6 +99,10 @@ tell you what actually works.
 ## GitHub code research
 - `github_find_examples`: Find working example scripts in HF repos (trl, transformers, etc.)
 - `github_read_file`: Read the actual implementation code. Use line_start/line_end for large files.
+
+## Internet Archive
+- `archive_search(operation="search", query=...)`: Public catalog (books, audio, software, historical material). Lucene syntax, e.g. `mediatype:texts`, `collection:usfeddocs`.
+- `archive_search(operation="metadata", identifier=...)`: Full metadata and file list for an item id from search.
 
 ## Documentation
 - `explore_hf_docs(endpoint)`: Search docs for a library. Endpoints: trl, transformers, datasets, peft, accelerate, trackio, vllm, inference-endpoints, etc.

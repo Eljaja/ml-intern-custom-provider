@@ -46,6 +46,10 @@ from agent.tools.hf_repo_git_tool import (
     hf_repo_git_handler,
 )
 from agent.tools.jobs_tool import HF_JOBS_TOOL_SPEC, hf_jobs_handler
+from agent.tools.archive_search_tool import (
+    ARCHIVE_SEARCH_TOOL_SPEC,
+    archive_search_handler,
+)
 from agent.tools.notify_tool import NOTIFY_TOOL_SPEC, notify_handler
 from agent.tools.papers_tool import HF_PAPERS_TOOL_SPEC, hf_papers_handler
 from agent.tools.plan_tool import PLAN_TOOL_SPEC, plan_tool_handler
@@ -317,6 +321,13 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
             description=WEB_SEARCH_TOOL_SPEC["description"],
             parameters=WEB_SEARCH_TOOL_SPEC["parameters"],
             handler=web_search_handler,
+        ),
+        # Internet Archive (archive.org) catalog
+        ToolSpec(
+            name=ARCHIVE_SEARCH_TOOL_SPEC["name"],
+            description=ARCHIVE_SEARCH_TOOL_SPEC["description"],
+            parameters=ARCHIVE_SEARCH_TOOL_SPEC["parameters"],
+            handler=archive_search_handler,
         ),
         # Dataset inspection tool (unified)
         ToolSpec(
