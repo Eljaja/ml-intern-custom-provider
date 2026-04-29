@@ -27,6 +27,7 @@ export interface ToolApproval {
   tool_call_id: string;
   approved: boolean;
   feedback?: string | null;
+  namespace?: string | null;
 }
 
 export interface User {
@@ -34,5 +35,4 @@ export interface User {
   username?: string;
   name?: string;
   picture?: string;
-  orgMember?: boolean;
 }

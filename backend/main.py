@@ -6,6 +6,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+# Load .env before importing routes/session_manager so persistence and quota
+# modules see local Mongo settings during startup.
+load_dotenv(Path(__file__).parent.parent / ".env")
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -16,6 +21,7 @@ from routes.auth import router as auth_router
 load_dotenv(Path(__file__).parent.parent / ".env", override=True)
 load_dotenv(Path.cwd() / ".env", override=False)
 load_dotenv(override=False)
+from session_manager import session_manager
 
 # Configure logging
 logging.basicConfig(
@@ -29,8 +35,37 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     logger.info("Starting HF Agent backend...")
+    await session_manager.start()
+    # Start in-process hourly KPI rollup. Replaces an external cron so the
+    # rollup lives next to the data and reuses the Space's HF token.
+    try:
+        import kpis_scheduler
+        kpis_scheduler.start()
+    except Exception as e:
+        logger.warning("KPI scheduler failed to start: %s", e)
     yield
+
     logger.info("Shutting down HF Agent backend...")
+    try:
+        import kpis_scheduler
+        await kpis_scheduler.shutdown()
+    except Exception as e:
+        logger.warning("KPI scheduler shutdown failed: %s", e)
+
+    # Final-flush: save every still-active session so we don't lose traces on
+    # server restart. Uploads are detached subprocesses — this is fast.
+    try:
+        for sid, agent_session in list(session_manager.sessions.items()):
+            sess = agent_session.session
+            if sess.config.save_sessions:
+                try:
+                    sess.save_and_upload_detached(sess.config.session_dataset_repo)
+                    logger.info("Flushed session %s on shutdown", sid)
+                except Exception as e:
+                    logger.warning("Failed to flush session %s: %s", sid, e)
+    except Exception as e:
+        logger.warning("Lifespan final-flush skipped: %s", e)
+    await session_manager.close()
 
 
 app = FastAPI(

@@ -42,35 +42,66 @@ function nextPartId(prefix: string): string {
   return `${prefix}-${Date.now()}-${++partIdCounter}`;
 }
 
+function lastEventKey(sessionId: string): string {
+  return `hf-agent-last-event:${sessionId}`;
+}
+
 /** Parse an SSE text stream into AgentEvent objects. */
-function createSSEParserStream(): TransformStream<string, AgentEvent> {
+function createSSEParserStream(sessionId: string): TransformStream<string, AgentEvent> {
   let buffer = '';
+  let eventId: string | null = null;
+  let data = '';
+
+  const dispatch = (controller: TransformStreamDefaultController<AgentEvent>) => {
+    if (!data.trim()) {
+      eventId = null;
+      data = '';
+      return;
+    }
+    try {
+      const json = JSON.parse(data.trim()) as AgentEvent;
+      const seq = json.seq ?? (eventId ? Number(eventId) : undefined);
+      if (Number.isFinite(seq)) {
+        json.seq = seq;
+        localStorage.setItem(lastEventKey(sessionId), String(seq));
+      }
+      controller.enqueue(json);
+    } catch {
+      logger.warn('SSE parse error:', data.trim());
+    } finally {
+      eventId = null;
+      data = '';
+    }
+  };
+
   return new TransformStream<string, AgentEvent>({
     transform(chunk, controller) {
       buffer += chunk;
       const lines = buffer.split('\n');
       // Keep the last (possibly incomplete) line in the buffer
       buffer = lines.pop() || '';
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith('data: ')) {
-          try {
-            const json = JSON.parse(trimmed.slice(6));
-            controller.enqueue(json as AgentEvent);
-          } catch {
-            logger.warn('SSE parse error:', trimmed);
-          }
+      for (const rawLine of lines) {
+        const line = rawLine.replace(/\r$/, '');
+        if (line === '') {
+          dispatch(controller);
+          continue;
+        }
+        if (line.startsWith(':')) continue;
+        if (line.startsWith('id:')) {
+          eventId = line.slice(3).trim();
+        } else if (line.startsWith('data:')) {
+          data += line.slice(5).trimStart() + '\n';
         }
       }
     },
     flush(controller) {
-      // Process any remaining data in buffer
-      if (buffer.trim().startsWith('data: ')) {
-        try {
-          const json = JSON.parse(buffer.trim().slice(6));
-          controller.enqueue(json as AgentEvent);
-        } catch { /* ignore incomplete */ }
+      const line = buffer.replace(/\r$/, '');
+      if (line.startsWith('id:')) {
+        eventId = line.slice(3).trim();
+      } else if (line.startsWith('data:')) {
+        data += line.slice(5).trimStart() + '\n';
       }
+      dispatch(controller);
     },
   });
 }
@@ -226,11 +257,16 @@ function createEventToChunkStream(sideChannel: SideChannelCallbacks): TransformS
           const state = (event.data?.state as string) || '';
           const toolName = (event.data?.tool as string) || '';
           const jobUrl = (event.data?.jobUrl as string) || undefined;
+          const trackioSpaceId = (event.data?.trackioSpaceId as string) || undefined;
+          const trackioProject = (event.data?.trackioProject as string) || undefined;
 
           if (tcId.startsWith('plan_tool')) break;
 
           if (jobUrl && tcId) {
             useAgentStore.getState().setJobUrl(tcId, jobUrl);
+          }
+          if (trackioSpaceId && tcId) {
+            useAgentStore.getState().setTrackioDashboard(tcId, trackioSpaceId, trackioProject);
           }
           if (state === 'running' && toolName) {
             sideChannel.onToolRunning(toolName);
@@ -240,6 +276,15 @@ function createEventToChunkStream(sideChannel: SideChannelCallbacks): TransformS
           }
           if (state === 'cancelled') {
             controller.enqueue({ type: 'tool-output-error', toolCallId: tcId, errorText: 'Cancelled by user', dynamic: true });
+          }
+          if (state === 'billing_required') {
+            const namespace = (event.data?.namespace as string) || '';
+            useAgentStore.getState().setJobsUpgradeRequired({
+              namespace: namespace || null,
+              message: namespace
+                ? `Hugging Face Jobs need credits on the "${namespace}" namespace. Add some, then re-run the same job — the agent will pick it back up.`
+                : 'Hugging Face Jobs need credits on this namespace. Add some, then re-run the same job — the agent will pick it back up.',
+            });
           }
           break;
         }
@@ -318,13 +363,13 @@ export class SSEChatTransport implements ChatTransport<UIMessage> {
       const approvals = approvedParts.map((p) => {
         if (p.type !== 'dynamic-tool') return null;
         const approved = p.approval?.approved ?? true;
-        // Get edited script from agentStore if available
         const editedScript = useAgentStore.getState().getEditedScript(p.toolCallId);
         return {
           tool_call_id: p.toolCallId,
           approved,
           feedback: approved ? null : (p.approval?.reason || 'Rejected by user'),
           edited_script: editedScript ?? null,
+          namespace: null,
         };
       }).filter(Boolean);
       body = { approvals };
@@ -374,7 +419,7 @@ export class SSEChatTransport implements ChatTransport<UIMessage> {
     // Pipe: response bytes → text → SSE events → UIMessageChunks
     return response.body
       .pipeThrough(new TextDecoderStream())
-      .pipeThrough(createSSEParserStream())
+      .pipeThrough(createSSEParserStream(sessionId))
       .pipeThrough(createEventToChunkStream(this.sideChannel));
   }
 
@@ -389,7 +434,9 @@ export class SSEChatTransport implements ChatTransport<UIMessage> {
       if (!info.is_processing) return null;
 
       // Session is mid-turn — subscribe to its event broadcast.
-      const response = await apiFetch(`/api/events/${this.sessionId}`, {
+      const lastSeq = localStorage.getItem(lastEventKey(this.sessionId));
+      const qs = lastSeq ? `?after=${encodeURIComponent(lastSeq)}` : '';
+      const response = await apiFetch(`/api/events/${this.sessionId}${qs}`, {
         headers: { 'Accept': 'text/event-stream' },
       });
       if (!response.ok || !response.body) return null;
@@ -398,7 +445,7 @@ export class SSEChatTransport implements ChatTransport<UIMessage> {
 
       return response.body
         .pipeThrough(new TextDecoderStream())
-        .pipeThrough(createSSEParserStream())
+        .pipeThrough(createSSEParserStream(this.sessionId))
         .pipeThrough(createEventToChunkStream(this.sideChannel));
     } catch {
       return null;
