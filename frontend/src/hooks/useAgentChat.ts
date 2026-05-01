@@ -587,6 +587,7 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
 
     const onVisible = async () => {
       if (document.visibilityState !== 'visible') return;
+      if (!isActiveRef.current) return;
 
       // Always re-hydrate messages on wake
       const result = await hydrateMessages();

@@ -4,31 +4,55 @@
  *
  * Uses the same storage namespace (`hf-agent-messages`) that the
  * old Zustand-based store used, so existing data is compatible.
+ *
+ * Performance: keeps an in-memory map and debounces disk writes so we do not
+ * JSON.parse/stringify the full blob on every save (main-thread jank on long chats).
  */
 import type { UIMessage } from 'ai';
 import { logger } from '@/utils/logger';
 
 const STORAGE_KEY = 'hf-agent-messages';
 const MAX_SESSIONS = 50;
+const FLUSH_DEBOUNCE_MS = 350;
 
 type MessagesMap = Record<string, UIMessage[]>;
 
-function readAll(): MessagesMap {
+let cachedMap: MessagesMap | null = null;
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function readAllFromStorage(): MessagesMap {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    // Legacy format was { messagesBySession: {...} }
-    if (parsed.messagesBySession) return parsed.messagesBySession;
-    // New flat format
-    if (typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed === 'object' && parsed !== null && 'messagesBySession' in parsed) {
+      return (parsed as { messagesBySession: MessagesMap }).messagesBySession;
+    }
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as MessagesMap;
+    }
     return {};
   } catch {
     return {};
   }
 }
 
-function writeAll(map: MessagesMap): void {
+function ensureCache(): MessagesMap {
+  if (!cachedMap) {
+    cachedMap = readAllFromStorage();
+  }
+  return cachedMap;
+}
+
+function evictIfNeeded(map: MessagesMap): void {
+  const keys = Object.keys(map);
+  if (keys.length > MAX_SESSIONS) {
+    const toRemove = keys.slice(0, keys.length - MAX_SESSIONS);
+    for (const k of toRemove) delete map[k];
+  }
+}
+
+function writeAllToStorage(map: MessagesMap): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
   } catch (e) {
@@ -36,36 +60,57 @@ function writeAll(map: MessagesMap): void {
   }
 }
 
+function scheduleFlush(): void {
+  if (flushTimer !== null) clearTimeout(flushTimer);
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    flushPendingMessageSaves();
+  }, FLUSH_DEBOUNCE_MS);
+}
+
+/** Apply pending debounced write immediately (tab close, session delete, etc.). */
+export function flushPendingMessageSaves(): void {
+  if (flushTimer !== null) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  if (!cachedMap) return;
+  writeAllToStorage(cachedMap);
+}
+
 export function loadMessages(sessionId: string): UIMessage[] {
-  const map = readAll();
-  const messages = map[sessionId] ?? [];
-  return messages;
+  return ensureCache()[sessionId] ?? [];
 }
 
 export function saveMessages(sessionId: string, messages: UIMessage[]): void {
-  const map = readAll();
+  const map = ensureCache();
   map[sessionId] = messages;
-
-  // Evict oldest sessions if we exceed the cap
-  const keys = Object.keys(map);
-  if (keys.length > MAX_SESSIONS) {
-    const toRemove = keys.slice(0, keys.length - MAX_SESSIONS);
-    for (const k of toRemove) delete map[k];
-  }
-
-  writeAll(map);
+  evictIfNeeded(map);
+  scheduleFlush();
 }
 
 export function deleteMessages(sessionId: string): void {
-  const map = readAll();
+  const map = ensureCache();
   delete map[sessionId];
-  writeAll(map);
+  flushPendingMessageSaves();
 }
 
 export function moveMessages(fromId: string, toId: string): void {
-  const map = readAll();
+  const map = ensureCache();
   if (!map[fromId]) return;
   map[toId] = map[fromId];
   delete map[fromId];
-  writeAll(map);
+  flushPendingMessageSaves();
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key === STORAGE_KEY) cachedMap = null;
+  });
+  const onHide = () => {
+    if (document.visibilityState === 'hidden') flushPendingMessageSaves();
+  };
+  document.addEventListener('visibilitychange', onHide);
+  window.addEventListener('pagehide', flushPendingMessageSaves);
+  window.addEventListener('beforeunload', flushPendingMessageSaves);
 }

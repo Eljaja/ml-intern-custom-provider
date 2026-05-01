@@ -85,11 +85,20 @@ export default function MessageList({ messages, isProcessing, sessionId, approve
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
+    let raf = 0;
     const observer = new MutationObserver(() => {
-      if (stickToBottom.current) el.scrollTop = el.scrollHeight;
+      if (!stickToBottom.current) return;
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        el.scrollTop = el.scrollHeight;
+      });
     });
     observer.observe(el, { childList: true, subtree: true, characterData: true });
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (raf) cancelAnimationFrame(raf);
+    };
   }, []);
 
   const lastUserMsgId = useMemo(() => {
