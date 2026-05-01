@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from routes.agent import router as agent_router
 from routes.auth import router as auth_router
+from routes.lifecycle import router as lifecycle_router
 
 # Load project-local .env first and let it override inherited process env.
 load_dotenv(Path(__file__).parent.parent / ".env", override=True)
@@ -107,6 +108,7 @@ app.add_middleware(
 # Include routers
 app.include_router(agent_router)
 app.include_router(auth_router)
+app.include_router(lifecycle_router)
 
 # Serve static files (frontend build) in production
 static_path = Path(__file__).parent.parent / "static"

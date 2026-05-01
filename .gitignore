@@ -72,3 +72,6 @@ checkpoint-*/
 runs/
 wandb/
 frontend/tsconfig.tsbuildinfo
+
+# Local lifecycle SQLite (ML_INTERN_LIFECYCLE_DB default)
+backend/.data/
