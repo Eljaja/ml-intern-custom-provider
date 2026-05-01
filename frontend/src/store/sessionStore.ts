@@ -32,6 +32,8 @@ interface SessionStore {
    *  Used when we rehydrate an expired session into a freshly-created backend
    *  session — preserves title, timestamps, and messages. */
   renameSession: (oldId: string, newId: string) => void;
+  setLifecycleRootTask: (sessionId: string, taskId: string) => void;
+  setLifecyclePlanStepTasks: (sessionId: string, mapping: Record<string, string>) => void;
 }
 
 export const useSessionStore = create<SessionStore>()(
@@ -164,6 +166,22 @@ export const useSessionStore = create<SessionStore>()(
         set((state) => ({
           sessions: state.sessions.map((s) =>
             s.id === id ? { ...s, needsAttention: needs } : s
+          ),
+        }));
+      },
+
+      setLifecycleRootTask: (sessionId: string, taskId: string) => {
+        set((state) => ({
+          sessions: state.sessions.map((s) =>
+            s.id === sessionId ? { ...s, lifecycleRootTaskId: taskId } : s
+          ),
+        }));
+      },
+
+      setLifecyclePlanStepTasks: (sessionId: string, mapping: Record<string, string>) => {
+        set((state) => ({
+          sessions: state.sessions.map((s) =>
+            s.id === sessionId ? { ...s, lifecyclePlanStepTasks: mapping } : s
           ),
         }));
       },

@@ -17,6 +17,7 @@ import AddIcon from '@mui/icons-material/Add';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
 import AssignmentOutlinedIcon from '@mui/icons-material/AssignmentOutlined';
+import LaunchIcon from '@mui/icons-material/Launch';
 import { Link as RouterLink } from 'react-router-dom';
 import { useSessionStore } from '@/store/sessionStore';
 import { useAgentStore } from '@/store/agentStore';
@@ -33,6 +34,8 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
     useAgentStore();
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [capacityError, setCapacityError] = useState<string | null>(null);
+
+  const activeChatTaskId = sessions.find((s) => s.id === activeSessionId)?.lifecycleRootTaskId;
 
   useEffect(() => {
     let cancelled = false;
@@ -184,6 +187,30 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
       >
         Task cockpit
       </Button>
+
+      {activeChatTaskId ? (
+        <Button
+          component={RouterLink}
+          to={`/tasks/${activeChatTaskId}`}
+          fullWidth
+          size="small"
+          variant="text"
+          startIcon={<LaunchIcon sx={{ fontSize: 18 }} />}
+          sx={{
+            mx: 0.75,
+            mb: 1,
+            py: 0.5,
+            color: 'primary.main',
+            fontWeight: 600,
+            fontSize: '0.75rem',
+            textTransform: 'none',
+            justifyContent: 'flex-start',
+            '&:hover': { bgcolor: 'var(--hover-bg)' },
+          }}
+        >
+          This chat → task
+        </Button>
+      ) : null}
 
       {/* -- Capacity error ------------------------------------------------ */}
       {capacityError && (

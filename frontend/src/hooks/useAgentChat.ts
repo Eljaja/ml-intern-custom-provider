@@ -19,6 +19,7 @@ import { apiFetch } from '@/utils/api';
 import { useAgentStore } from '@/store/agentStore';
 import { useSessionStore } from '@/store/sessionStore';
 import { useLayoutStore } from '@/store/layoutStore';
+import { syncAgentPlanToLifecycle } from '@/lib/chatLifecycleSync';
 import { logger } from '@/utils/logger';
 
 interface UseAgentChatOptions {
@@ -35,6 +36,9 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
 
   const isActiveRef = useRef(isActive);
   isActiveRef.current = isActive;
+
+  /** Serialize lifecycle plan sync so rapid plan_update events don't interleave. */
+  const planSyncTailRef = useRef(Promise.resolve());
 
   const { setNeedsAttention } = useSessionStore();
 
@@ -83,6 +87,9 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
       onPlanUpdate: (plan) => {
         const typed = plan as Array<{ id: string; content: string; status: 'pending' | 'in_progress' | 'completed' }>;
         updateSession(sessionId, { plan: typed });
+        planSyncTailRef.current = planSyncTailRef.current
+          .then(() => syncAgentPlanToLifecycle(sessionId, typed))
+          .catch((e) => logger.error('lifecycle plan sync', e));
         if (isActiveRef.current && !useLayoutStore.getState().isRightPanelOpen) {
           useLayoutStore.getState().setRightPanelOpen(true);
         }
@@ -265,6 +272,11 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sessionId],
   );
+
+  // Reset plan sync queue when switching sessions
+  useEffect(() => {
+    planSyncTailRef.current = Promise.resolve();
+  }, [sessionId]);
 
   // -- Create transport (one per session, stable for lifetime) ------------
   const transportRef = useRef<SSEChatTransport | null>(null);

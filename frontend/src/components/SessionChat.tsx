@@ -5,7 +5,7 @@
  * runs — processing events — but only the active session renders visible
  * UI (MessageList + ChatInput).
  */
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useAgentChat } from '@/hooks/useAgentChat';
 import { useAgentStore } from '@/store/agentStore';
 import { useSessionStore } from '@/store/sessionStore';
@@ -14,6 +14,7 @@ import ChatInput from '@/components/Chat/ChatInput';
 import ExpiredBanner from '@/components/Chat/ExpiredBanner';
 import { apiFetch } from '@/utils/api';
 import { logger } from '@/utils/logger';
+import { ensureChatRootLifecycleTask, syncAgentPlanToLifecycle } from '@/lib/chatLifecycleSync';
 
 interface SessionChatProps {
   sessionId: string;
@@ -25,6 +26,11 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
   const { isConnected, isProcessing, activityStatus, updateSession } = useAgentStore();
   const { updateSessionTitle, sessions } = useSessionStore();
   const isExpired = sessions.find((s) => s.id === sessionId)?.expired === true;
+  const lifecycleBackfillRef = useRef(false);
+
+  useEffect(() => {
+    lifecycleBackfillRef.current = false;
+  }, [sessionId]);
 
   const { messages, sendMessage, stop, abortStream, status, undoLastTurn, editAndRegenerate, approveTools } = useAgentChat({
     sessionId,
@@ -33,6 +39,33 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
     onError: (error) => logger.error(`Session ${sessionId} error:`, error),
     onSessionDead,
   });
+
+  // Old sessions (before sync shipped): create root task from first user turn + replay plan.
+  useEffect(() => {
+    if (!isActive) return;
+    if (lifecycleBackfillRef.current) return;
+    const meta = sessions.find((s) => s.id === sessionId);
+    if (meta?.lifecycleRootTaskId) {
+      lifecycleBackfillRef.current = true;
+      return;
+    }
+    const firstUser = messages.find((m) => m.role === 'user');
+    if (!firstUser) return;
+    let text = '';
+    for (const p of firstUser.parts) {
+      if (p.type === 'text') text += p.text;
+    }
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    lifecycleBackfillRef.current = true;
+    void (async () => {
+      await ensureChatRootLifecycleTask(sessionId, trimmed);
+      const plan = useAgentStore.getState().getSessionState(sessionId).plan;
+      if (plan.length > 0) {
+        await syncAgentPlanToLifecycle(sessionId, plan);
+      }
+    })();
+  }, [isActive, sessionId, messages, sessions]);
 
   // When this session becomes active, restore its per-session state to the
   // global flat fields. The per-session state map is kept up-to-date by
@@ -86,10 +119,14 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
         }
       }
 
+      const isFirstMessage = messages.filter((m) => m.role === 'user').length === 0;
+      if (isFirstMessage) {
+        await ensureChatRootLifecycleTask(sessionId, trimmed);
+      }
+
       updateSession(sessionId, { isProcessing: true, activityStatus: { type: 'thinking' } });
       sendMessage({ text: trimmed, metadata: { createdAt: new Date().toISOString() } });
 
-      const isFirstMessage = messages.filter((m) => m.role === 'user').length === 0;
       if (isFirstMessage) {
         apiFetch('/api/title', {
           method: 'POST',

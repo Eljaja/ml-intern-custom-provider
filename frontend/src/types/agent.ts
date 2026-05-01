@@ -21,6 +21,10 @@ export interface SessionMeta {
    *  disables input until the user chooses to restore-with-summary or
    *  start fresh. */
   expired?: boolean;
+  /** Lifecycle task created for this chat (first user message). */
+  lifecycleRootTaskId?: string;
+  /** Agent plan step id → lifecycle task id (Kanban cards for each plan line). */
+  lifecyclePlanStepTasks?: Record<string, string>;
 }
 
 export interface ToolApproval {
