@@ -4,6 +4,7 @@ Provides ToolSpec and ToolRouter for managing both built-in and MCP tools
 """
 
 import logging
+import os
 import warnings
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
@@ -381,13 +382,20 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
         ),
     ]
 
-    # Sandbox or local tools (highest priority)
+    # Execution: local CLI / trusted server (local_mode), optional remote sandbox, or none.
     if local_mode:
         from agent.tools.local_tools import get_local_tools
 
         tools = get_local_tools() + tools
-    else:
+    elif os.environ.get("AGENT_REMOTE_SANDBOX", "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
         tools = get_sandbox_tools() + tools
+    # Else (default hosted web): no bash / sandbox — training runs only via local CLI
+    # or after explicitly enabling AGENT_REMOTE_SANDBOX on the server.
 
     tool_names = ", ".join([t.name for t in tools])
     logger.info(f"Loaded {len(tools)} built-in tools: {tool_names}")

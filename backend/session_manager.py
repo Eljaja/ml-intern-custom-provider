@@ -168,13 +168,13 @@ class SessionManager:
 
         t0 = _time.monotonic()
         # CLI runs with local_mode=True (bash/read/write on the dev machine).
-        # The web backend defaults to remote HuggingFace sandboxes. Set
-        # AGENT_LOCAL_MODE=1 in the server environment for a trusted,
-        # single-user local setup.
+        # Hosted web defaults to no sandbox/bash unless AGENT_REMOTE_SANDBOX=1.
+        # AGENT_LOCAL_MODE=1 gives bash/read/write on the server host (trusted setups).
         local_mode = os.environ.get("AGENT_LOCAL_MODE", "").lower() in (
             "1",
             "true",
             "yes",
+            "on",
         )
         tool_router = ToolRouter(
             self.config.mcpServers, hf_token=hf_token, local_mode=local_mode

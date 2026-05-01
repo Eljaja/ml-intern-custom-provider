@@ -193,6 +193,13 @@ class ContextManager:
             num_tools=len(tool_specs),
         )
 
+        tool_names = {
+            entry.get("function", {}).get("name")
+            for entry in (tool_specs or [])
+            if isinstance(entry, dict) and isinstance(entry.get("function"), dict)
+        }
+        tool_names.discard(None)
+
         # CLI-specific context for local mode
         if local_mode:
             import os
@@ -208,6 +215,17 @@ class ContextManager:
                 f"The sandbox_create tool is NOT available. Run code directly with bash."
             )
             static_prompt += local_context
+        elif "sandbox_create" not in tool_names:
+            static_prompt += (
+                "\n\n# Hosted web session (code execution disabled)\n\n"
+                "This deployment does not expose bash, sandbox_create, or read/write/edit "
+                "for running training or arbitrary code in the browser. For execution, "
+                "the user should run the `ml-intern` CLI on their machine. Operators may "
+                "set AGENT_REMOTE_SANDBOX=1 to enable remote Hugging Face sandboxes, or "
+                "AGENT_LOCAL_MODE=1 for shell access on the server host (trusted setups only). "
+                "Until then, focus on research, planning, Hub and repo inspection, and "
+                "delivering runnable scripts or clear instructions for local runs."
+            )
 
         return (
             f"{static_prompt}\n\n"
