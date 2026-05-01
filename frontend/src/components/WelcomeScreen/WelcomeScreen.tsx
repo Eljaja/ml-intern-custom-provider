@@ -6,6 +6,7 @@ import {
   CircularProgress,
   Alert,
 } from '@mui/material';
+import { Link as RouterLink } from 'react-router-dom';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import LoginIcon from '@mui/icons-material/Login';
@@ -382,6 +383,21 @@ export default function WelcomeScreen() {
         >
           Conversations are stored locally in your browser.
         </Typography>
+
+        <Button
+          component={RouterLink}
+          to="/tasks"
+          variant="outlined"
+          sx={{
+            mt: 2,
+            borderColor: BRAND_PURPLE,
+            color: BRAND_PURPLE,
+            fontWeight: 700,
+            '&:hover': { borderColor: BRAND_PURPLE_HOVER, bgcolor: 'rgba(123, 63, 228, 0.08)' },
+          }}
+        >
+          Open task cockpit (runs & artifacts)
+        </Button>
       </Box>
     </Box>
   );

@@ -755,7 +755,10 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
   return {
     messages: chat.messages,
     sendMessage: chat.sendMessage,
+    /** Stop backend agent + show cancelled UI (does not abort the SDK stream). */
     stop,
+    /** Abort the in-flight SDK generation (fetch/stream). Use before sending a new message while busy. */
+    abortStream: chat.stop,
     status: chat.status,
     undoLastTurn,
     editAndRegenerate,

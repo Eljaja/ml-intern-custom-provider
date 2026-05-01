@@ -26,7 +26,7 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
   const { updateSessionTitle, sessions } = useSessionStore();
   const isExpired = sessions.find((s) => s.id === sessionId)?.expired === true;
 
-  const { messages, sendMessage, stop, status, undoLastTurn, editAndRegenerate, approveTools } = useAgentChat({
+  const { messages, sendMessage, stop, abortStream, status, undoLastTurn, editAndRegenerate, approveTools } = useAgentChat({
     sessionId,
     isActive,
     onReady: () => logger.log(`Session ${sessionId} ready`),
@@ -69,29 +69,43 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
 
   const handleSendMessage = useCallback(
     async (text: string) => {
-      if (!text.trim() || busy) return;
+      const trimmed = text.trim();
+      if (!trimmed) return;
+
+      if (busy) {
+        try {
+          await apiFetch(`/api/interrupt/${sessionId}`, { method: 'POST' });
+        } catch {
+          /* best-effort */
+        }
+        updateSession(sessionId, { isProcessing: false, activityStatus: { type: 'cancelled' } });
+        try {
+          await abortStream();
+        } catch {
+          /* ignore */
+        }
+      }
 
       updateSession(sessionId, { isProcessing: true, activityStatus: { type: 'thinking' } });
-      sendMessage({ text: text.trim(), metadata: { createdAt: new Date().toISOString() } });
+      sendMessage({ text: trimmed, metadata: { createdAt: new Date().toISOString() } });
 
-      // Auto-title the session from the first user message
       const isFirstMessage = messages.filter((m) => m.role === 'user').length === 0;
       if (isFirstMessage) {
         apiFetch('/api/title', {
           method: 'POST',
-          body: JSON.stringify({ session_id: sessionId, text: text.trim() }),
+          body: JSON.stringify({ session_id: sessionId, text: trimmed }),
         })
           .then((res) => res.json())
           .then((data) => {
             if (data.title) updateSessionTitle(sessionId, data.title);
           })
           .catch(() => {
-            const raw = text.trim();
+            const raw = trimmed;
             updateSessionTitle(sessionId, raw.length > 40 ? raw.slice(0, 40) + '\u2026' : raw);
           });
       }
     },
-    [sessionId, sendMessage, messages, updateSessionTitle, busy, updateSession],
+    [sessionId, sendMessage, messages, updateSessionTitle, busy, updateSession, abortStream],
   );
 
   // Don't render UI for background sessions — hooks still run
@@ -119,7 +133,7 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
           placeholder={
             activityStatus.type === 'waiting-approval'
               ? 'Approve or reject pending tools first...'
-              : undefined
+              : 'Ask anything, or steer the agent while it works…'
           }
         />
       )}

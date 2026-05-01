@@ -79,12 +79,12 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
   const setClaudeQuotaExhausted = useAgentStore((s) => s.setClaudeQuotaExhausted);
   const lastSentRef = useRef<string>('');
 
-  // Auto-focus the textarea when the session becomes ready
+  // Focus when the composer becomes usable (not blocked by approval / disconnect)
   useEffect(() => {
-    if (!disabled && !isProcessing && inputRef.current) {
+    if (!disabled && inputRef.current) {
       inputRef.current.focus();
     }
-  }, [disabled, isProcessing]);
+  }, [disabled, sessionId]);
 
   const handleSend = useCallback(() => {
     if (input.trim() && !disabled) {
@@ -194,7 +194,7 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
-            disabled={disabled || isProcessing}
+            disabled={disabled}
             variant="standard"
             inputRef={inputRef}
             InputProps={{
@@ -222,26 +222,51 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
             }}
           />
           {isProcessing ? (
-            <IconButton
-              onClick={onStop}
+            <Box
               sx={{
                 mt: 1,
-                p: 1.5,
-                borderRadius: '10px',
-                color: 'var(--muted-text)',
-                transition: 'all 0.2s',
-                position: 'relative',
-                '&:hover': {
-                  bgcolor: 'var(--hover-bg)',
-                  color: 'var(--accent-red)',
-                },
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 0.5,
+                alignItems: 'center',
               }}
             >
-              <Box sx={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <CircularProgress size={28} thickness={3} sx={{ color: 'inherit', position: 'absolute' }} />
-                <StopIcon sx={{ fontSize: 16 }} />
-              </Box>
-            </IconButton>
+              <IconButton
+                onClick={handleSend}
+                disabled={disabled || !input.trim()}
+                aria-label="Send message (stops current reply and sends this)"
+                sx={{
+                  p: 1,
+                  borderRadius: '10px',
+                  color: 'var(--accent-yellow)',
+                  transition: 'all 0.2s',
+                  '&:hover': { bgcolor: 'var(--hover-bg)' },
+                  '&.Mui-disabled': { opacity: 0.35 },
+                }}
+              >
+                <ArrowUpwardIcon fontSize="small" />
+              </IconButton>
+              <IconButton
+                onClick={onStop}
+                aria-label="Stop generation"
+                sx={{
+                  p: 1.5,
+                  borderRadius: '10px',
+                  color: 'var(--muted-text)',
+                  transition: 'all 0.2s',
+                  position: 'relative',
+                  '&:hover': {
+                    bgcolor: 'var(--hover-bg)',
+                    color: 'var(--accent-red)',
+                  },
+                }}
+              >
+                <Box sx={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <CircularProgress size={28} thickness={3} sx={{ color: 'inherit', position: 'absolute' }} />
+                  <StopIcon sx={{ fontSize: 16 }} />
+                </Box>
+              </IconButton>
+            </Box>
           ) : (
             <IconButton
               onClick={handleSend}

@@ -16,6 +16,8 @@ import {
 import AddIcon from '@mui/icons-material/Add';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
+import AssignmentOutlinedIcon from '@mui/icons-material/AssignmentOutlined';
+import { Link as RouterLink } from 'react-router-dom';
 import { useSessionStore } from '@/store/sessionStore';
 import { useAgentStore } from '@/store/agentStore';
 import { apiFetch } from '@/utils/api';
@@ -159,6 +161,29 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
           Recent chats
         </Typography>
       </Box>
+
+      <Button
+        component={RouterLink}
+        to="/tasks"
+        fullWidth
+        size="small"
+        variant="outlined"
+        startIcon={<AssignmentOutlinedIcon sx={{ fontSize: 18 }} />}
+        sx={{
+          mx: 0.75,
+          mb: 1,
+          py: 0.75,
+          borderColor: 'var(--border)',
+          color: 'var(--text)',
+          fontWeight: 700,
+          fontSize: '0.78rem',
+          textTransform: 'none',
+          justifyContent: 'flex-start',
+          '&:hover': { borderColor: 'primary.main', bgcolor: 'var(--hover-bg)' },
+        }}
+      >
+        Task cockpit
+      </Button>
 
       {/* -- Capacity error ------------------------------------------------ */}
       {capacityError && (
