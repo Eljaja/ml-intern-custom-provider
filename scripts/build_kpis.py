@@ -46,7 +46,6 @@ re-running the same hour overwrites.
     failure_rate / regenerate_rate  — kept for back-compat
     time_to_first_action_s_p50 / _p95  — from session_start to first tool_call
     thumbs_up / thumbs_down
-    hf_jobs_submitted / _succeeded / _blocked
     sandboxes_created / _cpu / _gpu  — sandbox_create events bucketed by hardware
     pro_cta_clicks
     gpu_hours_by_flavor_json   — JSON-serialised {flavor: gpu-hours}
@@ -103,19 +102,6 @@ from pathlib import Path
 from typing import Any, Iterable
 
 logger = logging.getLogger("build_kpis")
-
-# Rough gpu-hour pricing for hf_jobs flavor strings. Keep conservative; used
-# only to compute gpu-hours (not dollars) — wall_time_s * flavor_gpu_count.
-_FLAVOR_GPU_COUNT = {
-    "cpu-basic": 0, "cpu-upgrade": 0,
-    "t4-small": 1, "t4-medium": 1,
-    "l4x1": 1, "l4x4": 4,
-    "l40sx1": 1, "l40sx4": 4, "l40sx8": 8,
-    "a10g-small": 1, "a10g-large": 1, "a10g-largex2": 2, "a10g-largex4": 4,
-    "a100-large": 1, "a100x2": 2, "a100x4": 4, "a100x8": 8,
-    "h100": 1, "h100x8": 8,
-}
-
 
 def _percentile(values: list[float], p: float) -> float:
     if not values:
@@ -242,17 +228,13 @@ def _session_metrics(session: dict) -> dict:
     first_tool_ts = None
     session_start = session.get("session_start_time")
     gpu_hours_by_flavor: dict[str, float] = defaultdict(float)
-    jobs_submitted = 0
-    jobs_succeeded = 0
     thumbs_up = 0
     thumbs_down = 0
     sandboxes_created = 0
     sandboxes_cpu = 0
     sandboxes_gpu = 0
-    jobs_blocked = 0
     pro_cta_clicks = 0
     pro_conversions = 0
-    credits_topped_up = 0
     pro_cta_by_source: dict[str, int] = defaultdict(int)
     # Per-tool counters from tool_call events. Counted off tool_call (which
     # carries data["tool"]) rather than tool_output (which only carries
@@ -303,21 +285,6 @@ def _session_metrics(session: dict) -> dict:
             elif rating == "down":
                 thumbs_down += 1
 
-        elif et == "hf_job_submit":
-            jobs_submitted += 1
-
-        elif et == "hf_job_complete":
-            flavor = data.get("flavor") or "unknown"
-            status = (data.get("final_status") or "").lower()
-            wall = float(data.get("wall_time_s") or 0.0)
-            gpus = _FLAVOR_GPU_COUNT.get(flavor, 0)
-            gpu_hours_by_flavor[flavor] += wall * gpus / 3600.0
-            if status in ("completed", "succeeded", "success"):
-                jobs_succeeded += 1
-
-        elif et == "jobs_access_blocked":
-            jobs_blocked += 1
-
         elif et == "pro_cta_click":
             pro_cta_clicks += 1
             source = str(data.get("source") or "unknown")
@@ -325,9 +292,6 @@ def _session_metrics(session: dict) -> dict:
 
         elif et == "pro_conversion":
             pro_conversions += 1
-
-        elif et == "credits_topped_up":
-            credits_topped_up += 1
 
         elif et == "sandbox_create":
             sandboxes_created += 1
@@ -348,15 +312,11 @@ def _session_metrics(session: dict) -> dict:
     out["regenerate_sessions"] = 1 if had_undo else 0
     out["thumbs_up"] = thumbs_up
     out["thumbs_down"] = thumbs_down
-    out["hf_jobs_submitted"] = jobs_submitted
-    out["hf_jobs_succeeded"] = jobs_succeeded
     out["sandboxes_created"] = sandboxes_created
     out["sandboxes_cpu"] = sandboxes_cpu
     out["sandboxes_gpu"] = sandboxes_gpu
-    out["hf_jobs_blocked"] = jobs_blocked
     out["pro_cta_clicks"] = pro_cta_clicks
     out["pro_conversions"] = pro_conversions
-    out["credits_topped_up"] = credits_topped_up
     out["first_tool_s"] = first_tool_ts if first_tool_ts is not None else -1
     out["_gpu_hours_by_flavor"] = dict(gpu_hours_by_flavor)
     out["_pro_cta_by_source"] = dict(pro_cta_by_source)
@@ -465,15 +425,15 @@ def _aggregate(per_session: list[dict]) -> dict:
         "time_to_first_action_s_p95": round(_percentile(ttfa_values, 0.95), 2),
         "thumbs_up": int(sum(s["thumbs_up"] for s in per_session)),
         "thumbs_down": int(sum(s["thumbs_down"] for s in per_session)),
-        "hf_jobs_submitted": int(sum(s["hf_jobs_submitted"] for s in per_session)),
-        "hf_jobs_succeeded": int(sum(s["hf_jobs_succeeded"] for s in per_session)),
+        "hf_jobs_submitted": 0,
+        "hf_jobs_succeeded": 0,
         "sandboxes_created": int(sum(s.get("sandboxes_created", 0) for s in per_session)),
         "sandboxes_cpu": int(sum(s.get("sandboxes_cpu", 0) for s in per_session)),
         "sandboxes_gpu": int(sum(s.get("sandboxes_gpu", 0) for s in per_session)),
-        "hf_jobs_blocked": int(sum(s.get("hf_jobs_blocked", 0) for s in per_session)),
+        "hf_jobs_blocked": 0,
         "pro_cta_clicks": int(sum(s.get("pro_cta_clicks", 0) for s in per_session)),
         "pro_conversions": int(sum(s.get("pro_conversions", 0) for s in per_session)),
-        "credits_topped_up": int(sum(s.get("credits_topped_up", 0) for s in per_session)),
+        "credits_topped_up": 0,
         "gpu_hours_by_flavor_json": json.dumps(dict(gpu_hours), sort_keys=True),
         # Research KPIs — answer "is the agent reaching for research?".
         "research_calls": research_calls_total,

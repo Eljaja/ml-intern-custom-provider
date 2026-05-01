@@ -148,7 +148,7 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
           return;
         }
 
-        const STREAMABLE_TOOLS = new Set(['hf_jobs', 'sandbox', 'bash']);
+        const STREAMABLE_TOOLS = new Set(['sandbox', 'bash']);
         if (!STREAMABLE_TOOLS.has(tool)) return;
 
         const sessState = useAgentStore.getState().getSessionState(sessionId);
@@ -159,7 +159,7 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
           : log;
 
         if (!sessState.panelData) {
-          const title = tool === 'bash' ? 'Sandbox' : tool === 'sandbox' ? 'Sandbox' : 'Job Output';
+          const title = 'Sandbox';
           updateSession(sessionId, {
             panelData: { title, output: { content: newContent, language: 'text' } },
             panelView: 'output',
@@ -193,17 +193,7 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
         const args = firstTool.arguments as Record<string, string | undefined>;
 
         let panelUpdate: Partial<import('@/store/agentStore').PerSessionState> | undefined;
-        if (firstTool.tool === 'hf_jobs' && args.script) {
-          panelUpdate = {
-            panelData: {
-              title: 'Script',
-              script: { content: args.script, language: 'python' },
-              parameters: firstTool.arguments as Record<string, unknown>,
-            },
-            panelView: 'script' as const,
-            panelEditable: true,
-          };
-        } else if (firstTool.tool === 'hf_repo_files' && args.content) {
+        if (firstTool.tool === 'hf_repo_files' && args.content) {
           const filename = args.path || 'file';
           panelUpdate = {
             panelData: {
@@ -229,20 +219,7 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
         }
       },
       onToolCallPanel: (toolName: string, args: Record<string, unknown>) => {
-        if (toolName === 'hf_jobs' && args.operation && args.script) {
-          updateSession(sessionId, {
-            panelData: {
-              title: 'Script',
-              script: { content: String(args.script), language: 'python' },
-              parameters: args,
-            },
-            panelView: 'script',
-          });
-          if (isActiveRef.current) {
-            useLayoutStore.getState().setRightPanelOpen(true);
-            useLayoutStore.getState().setLeftSidebarOpen(false);
-          }
-        } else if (toolName === 'hf_repo_files' && args.operation === 'upload' && args.content) {
+        if (toolName === 'hf_repo_files' && args.operation === 'upload' && args.content) {
           updateSession(sessionId, {
             panelData: {
               title: `File Upload: ${String(args.path || 'unnamed')}`,
@@ -264,19 +241,9 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
           });
         }
       },
-      onToolOutputPanel: (toolName: string, _toolCallId: string, output: string, success: boolean) => {
-        const sessState = useAgentStore.getState().getSessionState(sessionId);
-        if (toolName === 'hf_jobs' && output) {
-          updateSession(sessionId, {
-            panelData: sessState.panelData
-              ? { ...sessState.panelData, output: { content: output, language: 'markdown' } }
-              : { title: 'Output', output: { content: output, language: 'markdown' } },
-            panelView: !success ? 'output' : sessState.panelView,
-          });
-        } else if (toolName === 'bash') {
-          if (!success) {
-            updateSession(sessionId, { panelView: 'output' });
-          }
+      onToolOutputPanel: (toolName: string, _toolCallId: string, _output: string, success: boolean) => {
+        if (toolName === 'bash' && !success) {
+          updateSession(sessionId, { panelView: 'output' });
         }
       },
       onStreaming: () => {

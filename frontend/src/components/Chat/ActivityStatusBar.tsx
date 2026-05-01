@@ -11,7 +11,6 @@ const shimmer = keyframes`
 const TOOL_LABELS: Record<string, string> = {
   sandbox_create: 'Creating sandbox for code development, this might take 1-2 minutes',
   bash: 'Running command in sandbox',
-  hf_jobs: 'Running a GPU job, this might take a while',
   hf_repo_files: 'Uploading file',
   hf_repo_git: 'Git operation',
   hf_inspect_dataset: 'Inspecting dataset',

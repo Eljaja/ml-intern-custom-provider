@@ -308,7 +308,7 @@ async def test_session_auto_notifications_only_send_opted_in_auto_destinations()
     await session.send_event(
         Event(
             event_type="approval_required",
-            data={"tools": [{"tool": "hf_jobs", "tool_call_id": "tc-1"}]},
+            data={"tools": [{"tool": "sandbox_create", "tool_call_id": "tc-1"}]},
         )
     )
     await session.send_event(
@@ -320,7 +320,7 @@ async def test_session_auto_notifications_only_send_opted_in_auto_destinations()
     assert request.destination == "slack.ops"
     assert request.severity == "warning"
     assert request.event_type == "approval_required"
-    assert "hf_jobs" in request.message
+    assert "sandbox_create" in request.message
 
 
 @pytest.mark.asyncio

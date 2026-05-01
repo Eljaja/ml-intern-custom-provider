@@ -256,15 +256,11 @@ function createEventToChunkStream(sideChannel: SideChannelCallbacks): TransformS
           const tcId = (event.data?.tool_call_id as string) || '';
           const state = (event.data?.state as string) || '';
           const toolName = (event.data?.tool as string) || '';
-          const jobUrl = (event.data?.jobUrl as string) || undefined;
           const trackioSpaceId = (event.data?.trackioSpaceId as string) || undefined;
           const trackioProject = (event.data?.trackioProject as string) || undefined;
 
           if (tcId.startsWith('plan_tool')) break;
 
-          if (jobUrl && tcId) {
-            useAgentStore.getState().setJobUrl(tcId, jobUrl);
-          }
           if (trackioSpaceId && tcId) {
             useAgentStore.getState().setTrackioDashboard(tcId, trackioSpaceId, trackioProject);
           }
@@ -276,15 +272,6 @@ function createEventToChunkStream(sideChannel: SideChannelCallbacks): TransformS
           }
           if (state === 'cancelled') {
             controller.enqueue({ type: 'tool-output-error', toolCallId: tcId, errorText: 'Cancelled by user', dynamic: true });
-          }
-          if (state === 'billing_required') {
-            const namespace = (event.data?.namespace as string) || '';
-            useAgentStore.getState().setJobsUpgradeRequired({
-              namespace: namespace || null,
-              message: namespace
-                ? `Hugging Face Jobs need credits on the "${namespace}" namespace. Add some, then re-run the same job — the agent will pick it back up.`
-                : 'Hugging Face Jobs need credits on this namespace. Add some, then re-run the same job — the agent will pick it back up.',
-            });
           }
           break;
         }

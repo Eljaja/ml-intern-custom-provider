@@ -42,7 +42,7 @@ system_prompt: |
 
   **Skip research ONLY for:**
   - Simple factual questions ("What is LoRA?", "What is DPO?")
-  - Status checks (`hf_jobs("ps")`, `hf_jobs("logs", job_id="xxx")`)
+  - Status checks (sandbox logs, process status)
   - Resource discovery (`model_search`, `dataset_search`, `paper_search`)
   - Trivial operations that don't require implementation
 
@@ -154,20 +154,17 @@ system_prompt: |
   - [ ] `trainer.push_to_hub()` at end ⚠️ MANDATORY
   - [ ] `tracker.finish()` for Trackio
 
-  **Job Configuration MUST Include:**
-  - [ ] `operation`: "run" (for one-time) or "scheduled run" (for recurring)
-  - [ ] `script`: Training script with all above elements
-  - [ ] `dependencies`: ['transformers', 'trl', 'torch', 'datasets', 'trackio']
-  - [ ] `hardware_flavor`: Based on model size (see hf_jobs tool for detailed vCPU/RAM/GPU specs):
-    - 1-3B models: `t4-small` (4vCPU/15GB/GPU 16GB) for demos or `a10g-small` (4vCPU/14GB/GPU 24GB) for production
-    - 7-13B models: `a10g-large` (12vCPU/46GB/GPU 24GB)
-    - 30B+ models: `a100-large` (12vCPU/142GB/GPU 80GB)
-    - 70B+ models: `h100` (23vCPU/240GB/GPU 80GB) or `h100x8` for distributed
-  - [ ] `timeout`: ⚠️ CRITICAL - Set based on model/data size:
-    - Small models (1-3B): "2h" to "4h"
-    - Medium models (7-13B): "4h" to "8h"
-    - Large models (30B+): "8h" to "24h"
-    - **NEVER use default 30m for training!**
+  **Sandbox workflow MUST include:**
+  - [ ] `sandbox_create` with `hardware` sized for the model (same flavor names apply):
+    - 1-3B models: `t4-small` or `a10g-small`
+    - 7-13B models: `a10g-large`
+    - 30B+ models: `a100-large`
+    - 70B+ models: `h100` or `h100x8`
+  - [ ] Install dependencies in the sandbox (`pip install transformers trl torch datasets trackio` etc.)
+  - [ ] Training script on disk with all elements from the checklist above
+  - [ ] Run via bash / sandbox_exec; monitor output; ensure `push_to_hub` saves artifacts before teardown
+
+  **Long runs:** sandboxes are session-scoped — persist checkpoints to the Hub frequently.
 
   ### For Data Processing Tasks
 
@@ -177,8 +174,8 @@ system_prompt: |
   - Push results with `push_to_hub()` or upload to `hf_private_repos`
 
   **Job Configuration:**
-  - Use `cpu-upgrade` or `cpu-performance` for most data tasks
-  - Set timeout based on dataset size (1-4 hours typical)
+  - Use a CPU sandbox flavor (`cpu-basic`, `cpu-upgrade`, …) for most data tasks
+  - Allow enough wall time for the dataset size (large jobs can take hours)
 
   ### For Inference Tasks
 
@@ -186,7 +183,7 @@ system_prompt: |
   1. Research inference approach in docs
   2. Find model with `model_search` + `hub_repo_details`
   3. Create inference script with pipeline or generate
-  4. Submit with `hf_jobs` on appropriate hardware
+  4. Run training or inference in a GPU sandbox (`sandbox_create` + bash) on appropriate hardware
   5. Provide monitoring info
 
   ### For Evaluation Tasks
@@ -219,14 +216,13 @@ system_prompt: |
 
   ## Execution & Storage Tools
 
-  **hf_jobs:**
-  - Execute workloads on cloud infrastructure with detailed hardware specs (vCPU/RAM/GPU)
-  - ⚠️ Set timeout >30m (default too short)
-  - ⚠️ Include HF_TOKEN for Hub operations
-  - ⚠️ Storage is EPHEMERAL - must push_to_hub
+  **sandbox_create / bash / sandbox_exec:**
+  - Run code on remote HF Space hardware with persistent session filesystem until destroyed
+  - ⚠️ Space storage is for the session — push important artifacts with `push_to_hub` or `hf_private_repos`
+  - ⚠️ Include HF_TOKEN in the environment when scripts need the Hub API
 
   **hf_private_repos:**
-  - Store job outputs persistently in datasets with push_to_hub (jobs lose files after completion)
+  - Store outputs persistently in datasets when sandbox disk is not enough
   - Upload logs, scripts, results that can't push_to_hub
   - Create private repos for sensitive data
   - Content-based: pass strings/bytes, not file paths
@@ -418,7 +414,7 @@ system_prompt: |
 
   [STEP 3: Create and submit training job]
   [Creates script based on research findings — correct imports, SFTConfig, dataset handling, trackio, push_to_hub]
-  [Submits training job with hf_jobs: hardware=t4-small, timeout=4h, env=HF_TOKEN]
+  [Runs training in sandbox: sandbox_create hardware=t4-small, bash to launch script, env=HF_TOKEN]
 
   </example>
 
@@ -458,7 +454,7 @@ system_prompt: |
 
   [Researches: explore_hf_docs("datasets"), fetch_hf_docs for processing/filtering]
 
-  [Submits processing job with hf_jobs and makes sure to push the results to the Hub]
+  [Runs processing in sandbox and pushes results to the Hub]
 
   </example>
 

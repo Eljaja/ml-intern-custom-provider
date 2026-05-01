@@ -7,7 +7,7 @@
  *  - Panel state (right panel — single-artifact pattern)
  *  - Plan state
  *  - User info / error banners
- *  - Edited scripts (for hf_jobs code editing)
+ *  - Edited scripts (approval flow)
  *
  * Per-session state:
  *  Each session maintains its own snapshot of processing/activity/panel/plan
@@ -45,11 +45,6 @@ export interface LLMHealthError {
   model: string;
 }
 
-export interface JobsUpgradeState {
-  message: string;
-  namespace?: string | null;
-}
-
 export type ActivityStatus =
   | { type: 'idle' }
   | { type: 'thinking' }
@@ -57,7 +52,6 @@ export type ActivityStatus =
   | { type: 'waiting-approval' }
   | { type: 'streaming' }
   | { type: 'cancelled' };
-
 export interface ResearchAgentStats {
   toolCount: number;
   tokenCount: number;
@@ -115,7 +109,6 @@ interface AgentStore {
   llmHealthError: LLMHealthError | null;
   /** Set when a Claude-send hits the daily quota — ChatInput opens the cap dialog in response. */
   claudeQuotaExhausted: boolean;
-  jobsUpgradeRequired: JobsUpgradeState | null;
 
   // Right panel (single-artifact pattern)
   panelData: PanelData | null;
@@ -128,15 +121,8 @@ interface AgentStore {
   // Edited scripts (tool_call_id -> edited content)
   editedScripts: Record<string, string>;
 
-  // Job URLs (tool_call_id -> job URL) for HF jobs
-  jobUrls: Record<string, string>;
-
-  // Job statuses (tool_call_id -> job status) for HF jobs
-  jobStatuses: Record<string, string>;
-
   // Trackio dashboard config per tool call (tool_call_id -> {spaceId, project?})
-  // Set by hf_jobs / sandbox_create tools when the agent declares trackio_space_id;
-  // the UI uses it to embed the live dashboard via an iframe.
+  // Set when the agent declares trackio_space_id; the UI embeds the live dashboard via an iframe.
   trackioDashboards: Record<string, { spaceId: string; project?: string }>;
 
   // Tool error states (tool_call_id -> true if errored) - persisted across renders
@@ -167,7 +153,6 @@ interface AgentStore {
   setError: (error: string | null) => void;
   setLlmHealthError: (error: LLMHealthError | null) => void;
   setClaudeQuotaExhausted: (exhausted: boolean) => void;
-  setJobsUpgradeRequired: (state: JobsUpgradeState | null) => void;
 
   setPanel: (data: PanelData, view?: PanelView, editable?: boolean) => void;
   setPanelView: (view: PanelView) => void;
@@ -181,12 +166,6 @@ interface AgentStore {
   setEditedScript: (toolCallId: string, content: string) => void;
   getEditedScript: (toolCallId: string) => string | undefined;
   clearEditedScripts: () => void;
-
-  setJobUrl: (toolCallId: string, jobUrl: string) => void;
-  getJobUrl: (toolCallId: string) => string | undefined;
-
-  setJobStatus: (toolCallId: string, status: string) => void;
-  getJobStatus: (toolCallId: string) => string | undefined;
 
   setTrackioDashboard: (toolCallId: string, spaceId: string, project?: string) => void;
   getTrackioDashboard: (toolCallId: string) => { spaceId: string; project?: string } | undefined;
@@ -286,7 +265,6 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   error: null,
   llmHealthError: null,
   claudeQuotaExhausted: false,
-  jobsUpgradeRequired: null,
 
   panelData: null,
   panelView: 'script',
@@ -295,8 +273,6 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   plan: [],
 
   editedScripts: {},
-  jobUrls: {},
-  jobStatuses: {},
   trackioDashboards: loadTrackioDashboards(),
   toolErrors: loadToolErrors(),
   rejectedTools: loadRejectedTools(),
@@ -400,7 +376,6 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   setError: (error) => set({ error }),
   setLlmHealthError: (error) => set({ llmHealthError: error }),
   setClaudeQuotaExhausted: (exhausted) => set({ claudeQuotaExhausted: exhausted }),
-  setJobsUpgradeRequired: (state) => set({ jobsUpgradeRequired: state }),
 
   // ── Panel (single-artifact) ───────────────────────────────────────
   // Each setter also patches the active session's snapshot so that
@@ -465,26 +440,6 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   getEditedScript: (toolCallId) => get().editedScripts[toolCallId],
 
   clearEditedScripts: () => set({ editedScripts: {} }),
-
-  // ── Job URLs ────────────────────────────────────────────────────────
-
-  setJobUrl: (toolCallId, jobUrl) => {
-    set((state) => ({
-      jobUrls: { ...state.jobUrls, [toolCallId]: jobUrl },
-    }));
-  },
-
-  getJobUrl: (toolCallId) => get().jobUrls[toolCallId],
-
-  // ── Job Statuses ────────────────────────────────────────────────────
-
-  setJobStatus: (toolCallId, status) => {
-    set((state) => ({
-      jobStatuses: { ...state.jobStatuses, [toolCallId]: status },
-    }));
-  },
-
-  getJobStatus: (toolCallId) => get().jobStatuses[toolCallId],
 
   // ── Trackio Dashboards ──────────────────────────────────────────────
 

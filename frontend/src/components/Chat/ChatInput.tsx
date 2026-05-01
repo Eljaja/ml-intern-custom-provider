@@ -5,7 +5,6 @@ import StopIcon from '@mui/icons-material/Stop';
 import { apiFetch } from '@/utils/api';
 import { useUserQuota } from '@/hooks/useUserQuota';
 import ClaudeCapDialog from '@/components/ClaudeCapDialog';
-import JobsUpgradeDialog from '@/components/JobsUpgradeDialog';
 import { useAgentStore } from '@/store/agentStore';
 import { CLAUDE_MODEL_PATH, FIRST_FREE_MODEL_PATH, isClaudePath } from '@/utils/model';
 
@@ -78,9 +77,6 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
   // can flip it without extra props.
   const claudeQuotaExhausted = useAgentStore((s) => s.claudeQuotaExhausted);
   const setClaudeQuotaExhausted = useAgentStore((s) => s.setClaudeQuotaExhausted);
-  const jobsUpgradeRequired = useAgentStore((s) => s.jobsUpgradeRequired);
-  const setJobsUpgradeRequired = useAgentStore((s) => s.setJobsUpgradeRequired);
-  const [awaitingTopUp, setAwaitingTopUp] = useState(false);
   const lastSentRef = useRef<string>('');
 
   // Auto-focus the textarea when the session becomes ready
@@ -163,46 +159,6 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
     }
   }, [sessionId]);
 
-  const handleJobsUpgradeClose = useCallback(() => {
-    setJobsUpgradeRequired(null);
-    setAwaitingTopUp(false);
-  }, [setJobsUpgradeRequired]);
-
-  const handleJobsUpgradeClick = useCallback(async () => {
-    setAwaitingTopUp(true);
-    if (!sessionId || !jobsUpgradeRequired) return;
-    try {
-      await apiFetch(`/api/pro-click/${sessionId}`, {
-        method: 'POST',
-        body: JSON.stringify({ source: 'hf_jobs_billing_dialog', target: 'hf_billing' }),
-      });
-    } catch {
-      /* tracking is best-effort */
-    }
-  }, [sessionId, jobsUpgradeRequired]);
-
-  const handleJobsRetry = useCallback(() => {
-    const namespace = jobsUpgradeRequired?.namespace;
-    setJobsUpgradeRequired(null);
-    setAwaitingTopUp(false);
-    const msg = namespace
-      ? `I just added credits to the \`${namespace}\` namespace. Please retry the previous job.`
-      : "I just added credits. Please retry the previous job.";
-    onSend(msg);
-  }, [jobsUpgradeRequired, setJobsUpgradeRequired, onSend]);
-
-  // Auto-retry when the user comes back to this tab after clicking "Add credits".
-  // Browsers fire visibilitychange when the tab regains focus from a sibling tab.
-  useEffect(() => {
-    if (!awaitingTopUp || !jobsUpgradeRequired) return;
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') {
-        handleJobsRetry();
-      }
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => document.removeEventListener('visibilitychange', onVisible);
-  }, [awaitingTopUp, jobsUpgradeRequired, handleJobsRetry]);
   return (
     <Box
       sx={{
@@ -317,14 +273,6 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
           onClose={handleCapDialogClose}
           onUseFreeModel={handleUseFreeModel}
           onUpgrade={handleClaudeUpgradeClick}
-        />
-        <JobsUpgradeDialog
-          open={!!jobsUpgradeRequired}
-          message={jobsUpgradeRequired?.message || ''}
-          awaitingTopUp={awaitingTopUp}
-          onClose={handleJobsUpgradeClose}
-          onUpgrade={handleJobsUpgradeClick}
-          onRetry={handleJobsRetry}
         />
       </Box>
     </Box>

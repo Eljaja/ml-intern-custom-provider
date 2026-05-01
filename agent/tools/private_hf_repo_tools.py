@@ -600,7 +600,7 @@ PRIVATE_HF_REPO_TOOL_SPEC = {
         "⚠️ PRIMARY USE: Store job outputs persistently (job storage is EPHEMERAL - everything deleted after completion). "
         "**Use when:** (1) Job completes and need to store logs/scripts/results, (2) Creating repos for training outputs, "
         "(3) Reading back stored files, (4) Managing Space files, (5) Organizing job artifacts by path. "
-        "**Pattern:** hf_jobs (ephemeral) → hf_private_repos upload_file (persistent) → can read_file later. "
+        "**Pattern:** run training in the sandbox (ephemeral) → hf_private_repos upload_file (persistent) → can read_file later. "
         "ALWAYS pass file_content as string/bytes (✓), never file paths (✗) - this is content-based, no filesystem access. "
         "**Operations:** create_repo (new private repo), upload_file (store content), read_file (retrieve content), list_files (browse), check_repo (verify exists). "
         "**Critical for reliability:** Jobs lose all files after completion - use this tool to preserve important outputs. "

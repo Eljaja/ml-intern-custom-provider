@@ -25,24 +25,21 @@ def _session_row():
             {"role": "user", "content": "fine-tune llama"},
             {"role": "assistant", "content": None, "tool_calls": [
                 {"id": "c1", "type": "function",
-                 "function": {"name": "hf_jobs", "arguments": '{"script":"from trl import SFTTrainer"}'}},
+                 "function": {"name": "bash", "arguments": '{"command":"from trl import SFTTrainer"}'}},
             ]},
             {"role": "tool", "tool_call_id": "c1", "content": "ok"},
             {"role": "assistant", "content": "done"},
         ],
         "events": [
+            {"timestamp": "2026-04-24T10:00:04", "event_type": "sandbox_create",
+             "data": {"hardware": "a100-large", "sandbox_id": "s1"}},
             {"timestamp": "2026-04-24T10:00:05", "event_type": "tool_call",
-             "data": {"tool": "hf_jobs",
-                      "arguments": {"script": "from trl import SFTTrainer"}}},
-            {"timestamp": "2026-04-24T10:00:06", "event_type": "hf_job_submit",
-             "data": {"flavor": "a100-large", "push_to_hub": True}},
-            {"timestamp": "2026-04-24T10:45:00", "event_type": "hf_job_complete",
-             "data": {"flavor": "a100-large", "final_status": "COMPLETED",
-                      "wall_time_s": 2700}},
+             "data": {"tool": "bash",
+                      "arguments": {"command": "from trl import SFTTrainer"}}},
             {"timestamp": "2026-04-24T10:45:05", "event_type": "turn_complete",
              "data": {}},
         ],
-        "tools": [{"type": "function", "function": {"name": "hf_jobs"}}],
+        "tools": [{"type": "function", "function": {"name": "bash"}}],
     }
 
 
@@ -54,15 +51,14 @@ def test_reshape_preserves_messages_and_tools_and_adds_tags():
     assert row["timestamp"] == "2026-04-24T10:00:00"
     # Messages preserved verbatim, in order, with tool_calls + tool role rows.
     assert len(row["messages"]) == 5
-    assert row["messages"][2]["tool_calls"][0]["function"]["name"] == "hf_jobs"
+    assert row["messages"][2]["tool_calls"][0]["function"]["name"] == "bash"
     assert row["messages"][3]["role"] == "tool"
     # Tools preserved verbatim.
-    assert row["tools"] == [{"type": "function", "function": {"name": "hf_jobs"}}]
+    assert row["tools"] == [{"type": "function", "function": {"name": "bash"}}]
     # Tags include the expected signals.
     tags = set(row["tags"])
-    assert "tool:hf_jobs" in tags
-    assert "hf_job:succeeded" in tags
-    assert "hf_job:push_to_hub" in tags
+    assert "tool:bash" in tags
+    assert "sandbox:created" in tags
     assert "gpu:a100" in tags
     assert "outcome:completed" in tags
     assert "task:training" in tags

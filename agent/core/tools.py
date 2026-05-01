@@ -45,7 +45,6 @@ from agent.tools.hf_repo_git_tool import (
     HF_REPO_GIT_TOOL_SPEC,
     hf_repo_git_handler,
 )
-from agent.tools.jobs_tool import HF_JOBS_TOOL_SPEC, hf_jobs_handler
 from agent.tools.archive_search_tool import (
     ARCHIVE_SEARCH_TOOL_SPEC,
     archive_search_handler,
@@ -68,7 +67,7 @@ warnings.filterwarnings(
     "ignore", category=DeprecationWarning, module="aiohttp.connector"
 )
 
-NOT_ALLOWED_TOOL_NAMES = ["hf_jobs", "hf_doc_search", "hf_doc_fetch", "hf_whoami"]
+NOT_ALLOWED_TOOL_NAMES = ["hf_doc_search", "hf_doc_fetch", "hf_whoami"]
 
 
 def convert_mcp_content_to_string(content: list) -> str:
@@ -349,12 +348,6 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
             parameters=NOTIFY_TOOL_SPEC["parameters"],
             handler=notify_handler,
         ),
-        ToolSpec(
-            name=HF_JOBS_TOOL_SPEC["name"],
-            description=HF_JOBS_TOOL_SPEC["description"],
-            parameters=HF_JOBS_TOOL_SPEC["parameters"],
-            handler=hf_jobs_handler,
-        ),
         # HF Repo management tools
         ToolSpec(
             name=HF_REPO_FILES_TOOL_SPEC["name"],
@@ -391,6 +384,7 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
     # Sandbox or local tools (highest priority)
     if local_mode:
         from agent.tools.local_tools import get_local_tools
+
         tools = get_local_tools() + tools
     else:
         tools = get_sandbox_tools() + tools

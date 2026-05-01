@@ -30,7 +30,6 @@ from agent.core.hf_tokens import resolve_hf_token
 from agent.core.session import OpType
 from agent.core.tools import ToolRouter
 from agent.messaging.gateway import NotificationGateway
-from agent.utils.reliability_checks import check_training_script_save_pattern
 from agent.utils.terminal_display import (
     get_console,
     print_approval_header,
@@ -436,59 +435,7 @@ async def event_listener(
 
                     print_approval_item(i, count, tool_name, operation)
 
-                    # Handle different tool types
-                    if tool_name == "hf_jobs":
-                        # Check if this is Python mode (script) or Docker mode (command)
-                        script = arguments.get("script")
-                        command = arguments.get("command")
-
-                        if script:
-                            # Python mode
-                            dependencies = arguments.get("dependencies", [])
-                            python_version = arguments.get("python")
-                            script_args = arguments.get("script_args", [])
-
-                            # Show full script
-                            print(f"Script:\n{script}")
-                            if dependencies:
-                                print(f"Dependencies: {', '.join(dependencies)}")
-                            if python_version:
-                                print(f"Python version: {python_version}")
-                            if script_args:
-                                print(f"Script args: {' '.join(script_args)}")
-
-                            # Run reliability checks on the full script (not truncated)
-                            check_message = check_training_script_save_pattern(script)
-                            if check_message:
-                                print(check_message)
-                        elif command:
-                            # Docker mode
-                            image = arguments.get("image", "python:3.12")
-                            command_str = (
-                                " ".join(command)
-                                if isinstance(command, list)
-                                else str(command)
-                            )
-                            print(f"Docker image: {image}")
-                            print(f"Command: {command_str}")
-
-                        # Common parameters for jobs
-                        hardware_flavor = arguments.get("hardware_flavor", "cpu-basic")
-                        timeout = arguments.get("timeout", "30m")
-                        env = arguments.get("env", {})
-                        schedule = arguments.get("schedule")
-
-                        print(f"Hardware: {hardware_flavor}")
-                        print(f"Timeout: {timeout}")
-
-                        if env:
-                            env_keys = ", ".join(env.keys())
-                            print(f"Environment variables: {env_keys}")
-
-                        if schedule:
-                            print(f"Schedule: {schedule}")
-
-                    elif tool_name == "hf_private_repos":
+                    if tool_name == "hf_private_repos":
                         # Handle private repo operations
                         args = _safe_get_args(arguments)
 

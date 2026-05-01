@@ -113,7 +113,6 @@ class Session:
         self._cancelled = asyncio.Event()
         self.pending_approval: Optional[dict[str, Any]] = None
         self.sandbox = None
-        self._running_job_ids: set[str] = set()  # HF job IDs currently executing
         self.notification_gateway = notification_gateway
         self.notification_destinations = list(notification_destinations or [])
         self.defer_turn_complete_notification = defer_turn_complete_notification

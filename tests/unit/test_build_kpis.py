@@ -71,7 +71,7 @@ def test_tool_success_rate_and_first_action():
     assert m["first_tool_s"] == 65
 
 
-def test_hf_job_gpu_hours():
+def test_gpu_hours_stay_empty_without_cloud_jobs():
     mod = _load()
     events = [
         _ev("hf_job_submit", {"flavor": "a100-large", "job_id": "j1"}),
@@ -82,13 +82,12 @@ def test_hf_job_gpu_hours():
         }),
     ]
     m = mod._session_metrics(_session(events))
-    assert m["hf_jobs_submitted"] == 1
-    assert m["hf_jobs_succeeded"] == 1
-    # a100-large = 1 gpu * 1 hour = 1 gpu-hour
-    assert abs(m["_gpu_hours_by_flavor"]["a100-large"] - 1.0) < 1e-6
+    assert m["hf_jobs_submitted"] == 0
+    assert m["hf_jobs_succeeded"] == 0
+    assert m["_gpu_hours_by_flavor"] == {}
 
 
-def test_hf_job_blocked_and_pro_clicks_are_counted():
+def test_legacy_hf_job_events_are_ignored_for_rollups():
     mod = _load()
     events = [
         _ev("jobs_access_blocked", {"tool_call_ids": ["tc1"], "plan": "free"}),
@@ -96,7 +95,7 @@ def test_hf_job_blocked_and_pro_clicks_are_counted():
         _ev("pro_cta_click", {"source": "claude_cap_dialog"}),
     ]
     m = mod._session_metrics(_session(events))
-    assert m["hf_jobs_blocked"] == 1
+    assert m["hf_jobs_blocked"] == 0
     assert m["pro_cta_clicks"] == 2
     assert m["_pro_cta_by_source"] == {
         "hf_jobs_upgrade_dialog": 1,
@@ -104,7 +103,7 @@ def test_hf_job_blocked_and_pro_clicks_are_counted():
     }
 
 
-def test_pro_conversions_and_credits_topped_up_per_session():
+def test_pro_conversions_and_legacy_credits_events_are_ignored_in_rollups():
     mod = _load()
     events = [
         _ev("pro_conversion", {"first_seen_at": "2026-04-20T10:00:00"}),
@@ -113,7 +112,7 @@ def test_pro_conversions_and_credits_topped_up_per_session():
     ]
     m = mod._session_metrics(_session(events))
     assert m["pro_conversions"] == 1
-    assert m["credits_topped_up"] == 2
+    assert m["credits_topped_up"] == 0
 
 
 def test_aggregate_sums_pro_conversions_and_credits_topped_up():
@@ -127,7 +126,7 @@ def test_aggregate_sums_pro_conversions_and_credits_topped_up():
     s3 = mod._session_metrics(_session([], user_id="u3"))
     row = mod._aggregate([s1, s2, s3])
     assert row["pro_conversions"] == 1
-    assert row["credits_topped_up"] == 1
+    assert row["credits_topped_up"] == 0
 
 
 def test_feedback_counts():
@@ -260,10 +259,8 @@ def test_breadth_intensity_percentiles_exclude_zero_tool_sessions():
     assert row["tool_calls_per_session_p50"] == 3.0
 
 
-def test_pro_clicks_and_blocked_jobs_in_aggregate():
-    """The aggregate row keeps pro_cta_clicks + hf_jobs_blocked columns
-    even if the dashboard doesn't currently chart them — they're cheap to
-    keep and downstream consumers may still depend on the schema."""
+def test_pro_clicks_in_aggregate_hf_jobs_columns_stay_zero():
+    """Aggregate keeps legacy hf_jobs_* CSV columns at zero; pro_cta still rolls up."""
     mod = _load()
     s1 = mod._session_metrics(_session([
         _ev("pro_cta_click", {"source": "hf_jobs_upgrade_dialog"}),
@@ -276,7 +273,8 @@ def test_pro_clicks_and_blocked_jobs_in_aggregate():
     ], user_id="u2"))
     row = mod._aggregate([s1, s2])
     assert row["pro_cta_clicks"] == 2
-    assert row["hf_jobs_blocked"] == 3
+    assert row["hf_jobs_blocked"] == 0
+    assert row["hf_jobs_submitted"] == 0
 
 
 def test_aggregate_sessions_by_model_split():

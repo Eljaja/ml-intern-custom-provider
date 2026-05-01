@@ -291,9 +291,9 @@ SANDBOX_CREATE_TOOL_SPEC = {
     "name": "sandbox_create",
     "description": (
         "Create a persistent remote Linux environment for developing and testing scripts.\n\n"
-        "Workflow: sandbox_create → write script → pip install → test with small run → fix errors → hf_jobs at scale.\n"
+        "Workflow: sandbox_create → write script → pip install → test with small run → fix errors → promote when satisfied.\n"
         "The sandbox persists across tool calls within the session. pip install works out of the box.\n\n"
-        "Use this when: you need to develop, test, and iterate on scripts before launching via hf_jobs. "
+        "Use this when: you need to develop, test, and iterate on scripts in a remote sandbox. "
         "Especially for training scripts where you need to verify imports, test on a small subset, and fix errors interactively.\n\n"
         "Skip this when: the task is a simple one-shot operation (status check, resource search, quick data query), "
         "or the script is copied from a verified working example with minimal changes.\n\n"

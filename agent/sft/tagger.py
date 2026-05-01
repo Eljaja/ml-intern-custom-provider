@@ -2,18 +2,17 @@
 
 ``tag_session(trajectory)`` → ``list[str]``. Pure function. No filtering, no
 mutation — tags are purely metadata so downstream pipelines can slice the raw
-SFT dataset (``where 'hf_job:succeeded' in tags``) without re-reading trajectories.
+SFT dataset without re-reading trajectories.
 
 Tag namespaces (all tags are ``"<namespace>:<value>"`` strings):
 
-* ``tool:<name>``       — every tool called at least once (``tool:hf_jobs``, …)
+* ``tool:<name>``       — every tool called at least once
 * ``outcome:<end>``     — ``completed`` / ``errored`` / ``interrupted`` /
                           ``ongoing`` / ``doom_loop`` / ``context_exceeded``
-* ``hf_job:<facet>``    — ``submitted``, ``succeeded``, ``failed``,
-                          ``multi`` (>1), ``oom``, ``push_to_hub``
 * ``gpu:<kind>``        — ``none``, ``t4``, ``a10g``, ``a100``, ``l40s``,
                           ``h100``, plus ``gpu:multi`` for x2/x4/x8 flavors
 * ``sandbox:<facet>``   — ``created``, ``gpu``, ``cpu``, ``long_lived`` (>30 min)
+* ``compute:oom``      — OOM signal seen in any tool output
 * ``feedback:<kind>``   — ``up``, ``down``, ``mixed``, ``none``
 * ``model:<family>``    — ``opus`` / ``sonnet`` / ``haiku`` / ``kimi`` /
                           ``gpt`` / ``deepseek`` / ``qwen`` / ``other``
@@ -45,12 +44,12 @@ _GPU_FAMILY = {
 # Substrings that count a flavor as multi-GPU.
 _MULTI_GPU_MARKERS = ("x2", "x4", "x8")
 
-# Tool names that don't touch training/inference or sandbox/jobs. If a session
+# Tool names that don't touch training/inference or sandbox. If a session
 # only used these, we tag it research_only.
 _RESEARCH_ONLY_TOOLS = {
     "research", "github_find_examples", "github_read_file", "github_list_repos",
     "hf_papers", "explore_hf_docs", "fetch_hf_docs", "hub_repo_details",
-    "plan", "hf_inspect_dataset", "web_search",
+    "plan", "hf_inspect_dataset", "web_search", "archive_search",
 }
 
 # Tool names that signal data manipulation workflows.
@@ -116,15 +115,13 @@ def _has_oom_signal(tool_outputs: Iterable[str]) -> bool:
 
 def _infer_task_tag(
     tool_names: set[str],
-    hf_job_submit_scripts: list[str],
+    training_scripts: list[str],
 ) -> str | None:
     """Return a ``task:*`` tag or None if we can't tell.
 
     Heuristic order: training > inference > data_prep > research_only.
     """
-    # training: any hf_jobs script with a Trainer/SFT/training keyword, OR uses
-    # hf_jobs at all and a script mentions training APIs.
-    for script in hf_job_submit_scripts:
+    for script in training_scripts:
         low = script.lower()
         if any(k in low for k in (
             "sftconfig", "sfttrainer", "trainer(", "trainingarguments",
@@ -133,16 +130,13 @@ def _infer_task_tag(
         )):
             return "training"
 
-    # inference: sessions that use inference tools but never hf_jobs/sandbox
-    uses_compute = bool(tool_names & {"hf_jobs", "sandbox_create", "sandbox_exec"})
+    uses_compute = bool(tool_names & {"sandbox_create", "sandbox_exec"})
     if not uses_compute and tool_names & {"inference", "generate", "run_inference"}:
         return "inference"
 
-    # data_prep: primarily dataset tools and no training/inference
     if tool_names & _DATA_PREP_TOOLS and not uses_compute:
         return "data_prep"
 
-    # research_only: every tool used is in the research allow-list
     if tool_names and tool_names <= _RESEARCH_ONLY_TOOLS:
         return "research_only"
 
@@ -157,26 +151,17 @@ def tag_session(trajectory: dict) -> list[str]:
     messages: list[dict] = trajectory.get("messages") or []
     model_name: str | None = trajectory.get("model_name")
 
-    # model
     tags.add(f"model:{_model_family(model_name)}")
 
-    # turns
     user_turns = sum(1 for m in messages if m.get("role") == "user")
     tags.add(f"turns:{_turns_bucket(user_turns)}")
 
-    # cost + tool-name enumeration + outcome detection
     cost_usd = 0.0
     tool_names: set[str] = set()
     tool_outputs: list[str] = []
-    hf_job_submit_count = 0
-    hf_job_submit_scripts: list[str] = []
-    hf_job_success_count = 0
-    hf_job_fail_count = 0
-    hf_job_push_to_hub = False
+    training_scripts: list[str] = []
     gpu_tags_seen: set[str] = set()
 
-    # Outcome is the *last* terminal signal. Seed with "ongoing" — overridden
-    # if we see a terminal event.
     outcome = "ongoing"
     had_error = False
     had_doom_loop = False
@@ -200,30 +185,23 @@ def tag_session(trajectory: dict) -> list[str]:
             name = data.get("tool")
             if name:
                 tool_names.add(name)
+            args = data.get("arguments")
+            if isinstance(args, dict):
+                script = args.get("script") or args.get("command") or ""
+                if isinstance(script, str) and script.strip():
+                    training_scripts.append(script)
 
         elif et == "tool_output":
             out = data.get("output")
             if isinstance(out, str):
                 tool_outputs.append(out)
 
-        elif et == "hf_job_submit":
-            hf_job_submit_count += 1
-            if data.get("push_to_hub"):
-                hf_job_push_to_hub = True
-            flavor = data.get("flavor") or "cpu-basic"
-            for t in _flavor_to_gpu_tags(flavor):
-                gpu_tags_seen.add(t)
-
-        elif et == "hf_job_complete":
-            final = (data.get("final_status") or "").lower()
-            if final in ("completed", "succeeded", "success"):
-                hf_job_success_count += 1
-            elif final in ("failed", "error", "timeout", "cancelled"):
-                hf_job_fail_count += 1
-
         elif et == "sandbox_create":
             sandbox_created = True
             sandbox_hardware = data.get("hardware")
+            flavor = str(sandbox_hardware or "cpu-basic").lower()
+            for t in _flavor_to_gpu_tags(flavor):
+                gpu_tags_seen.add(t)
 
         elif et == "sandbox_destroy":
             lt = data.get("lifetime_s")
@@ -260,40 +238,24 @@ def tag_session(trajectory: dict) -> list[str]:
     if had_compact:
         tags.add("outcome:context_exceeded")
 
-    # tools
     for name in tool_names:
         tags.add(f"tool:{name}")
 
-    # hf_jobs facets
-    if hf_job_submit_count >= 1:
-        tags.add("hf_job:submitted")
-    if hf_job_submit_count > 1:
-        tags.add("hf_job:multi")
-    if hf_job_success_count > 0:
-        tags.add("hf_job:succeeded")
-    if hf_job_fail_count > 0:
-        tags.add("hf_job:failed")
-    if hf_job_push_to_hub:
-        tags.add("hf_job:push_to_hub")
     if _has_oom_signal(tool_outputs):
-        tags.add("hf_job:oom")
+        tags.add("compute:oom")
 
-    # gpu tags (from all submitted jobs)
     tags.update(gpu_tags_seen)
     if "gpu:none" in tags and len(gpu_tags_seen) > 1:
-        # If any GPU flavor was used, drop the "none" tag for clarity.
         tags.discard("gpu:none")
 
-    # sandbox facets
     if sandbox_created:
         tags.add("sandbox:created")
         if sandbox_hardware:
-            fam = _GPU_FAMILY.get(sandbox_hardware, "none")
+            fam = _GPU_FAMILY.get(str(sandbox_hardware).lower(), "none")
             tags.add("sandbox:cpu" if fam == "none" else "sandbox:gpu")
         if sandbox_lifetime_s is not None and sandbox_lifetime_s > 1800:
             tags.add("sandbox:long_lived")
 
-    # feedback
     if feedback_up and feedback_down:
         tags.add("feedback:mixed")
     elif feedback_up:
@@ -303,21 +265,9 @@ def tag_session(trajectory: dict) -> list[str]:
     else:
         tags.add("feedback:none")
 
-    # cost bucket
     tags.add(f"cost:{_cost_bucket(cost_usd)}")
 
-    # task heuristic (needs scripts — pull from the hf_job_submit events'
-    # matching tool_call arguments in the event list).
-    for ev in events:
-        if ev.get("event_type") == "tool_call":
-            data = ev.get("data") or {}
-            if data.get("tool") == "hf_jobs":
-                args = data.get("arguments") or {}
-                script = args.get("script") or args.get("command") or ""
-                if isinstance(script, str):
-                    hf_job_submit_scripts.append(script)
-
-    task_tag = _infer_task_tag(tool_names, hf_job_submit_scripts)
+    task_tag = _infer_task_tag(tool_names, training_scripts)
     if task_tag:
         tags.add(f"task:{task_tag}")
 

@@ -95,7 +95,7 @@ system_prompt: |
   3. Use fetch_hf_docs to read the relevant documentation more precisely.
   4. Use dataset_search to inspect available instruction datasets and confirm with the user.
   5. Use model_search to find compatible base models and confirm choice.
-  6. Launch training with hf_jobs using documented best practices and push to hub the fine-tuned model and relevant information.
+  6. Run training in a GPU sandbox (sandbox_create) using documented best practices and push to the Hub the fine-tuned model and relevant information.
   </example>
 
   <example>
@@ -136,7 +136,7 @@ system_prompt: |
   1. Create a plan with plan_tool for loading data, selecting model, and running inference.
   2. Use model_search to locate the exact model and confirm with the user.
   3. Use explore_hf_docs and fetch_hf_docs to find the correct inference API.
-  4. Execute the script with hf_jobs.
+  4. Execute the script in the sandbox (bash / sandbox workflow).
   </example>
 
   <example>

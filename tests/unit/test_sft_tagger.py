@@ -46,12 +46,12 @@ def test_cost_buckets():
 
 def test_tool_tags():
     events = [
-        _ev("tool_call", {"tool": "hf_jobs", "arguments": {}}),
+        _ev("tool_call", {"tool": "sandbox_create", "arguments": {}}),
         _ev("tool_call", {"tool": "research"}),
         _ev("tool_call", {"tool": "bash"}),
     ]
     tags = tag_session(_traj(events))
-    assert "tool:hf_jobs" in tags
+    assert "tool:sandbox_create" in tags
     assert "tool:research" in tags
     assert "tool:bash" in tags
 
@@ -88,34 +88,23 @@ def test_outcome_doom_loop_and_context():
     assert "outcome:context_exceeded" in tags
 
 
-def test_hf_job_tags():
+def test_sandbox_gpu_tags_from_create():
     events = [
-        _ev("tool_call", {"tool": "hf_jobs", "arguments": {"script": "from trl import SFTTrainer"}}),
-        _ev("hf_job_submit", {
-            "flavor": "a100-large", "push_to_hub": True, "job_id": "j1",
-        }),
-        _ev("hf_job_complete", {"flavor": "a100-large", "final_status": "COMPLETED", "wall_time_s": 3600}),
-        _ev("hf_job_submit", {"flavor": "a100x4", "push_to_hub": False}),
-        _ev("hf_job_complete", {"flavor": "a100x4", "final_status": "FAILED"}),
+        _ev("sandbox_create", {"hardware": "a100-large", "sandbox_id": "s1"}),
+        _ev("sandbox_destroy", {"lifetime_s": 60}),
     ]
     tags = tag_session(_traj(events))
-    assert "hf_job:submitted" in tags
-    assert "hf_job:multi" in tags
-    assert "hf_job:succeeded" in tags
-    assert "hf_job:failed" in tags
-    assert "hf_job:push_to_hub" in tags
+    assert "sandbox:created" in tags
     assert "gpu:a100" in tags
-    assert "gpu:multi" in tags
 
 
-def test_hf_job_oom():
+def test_tool_output_oom_tag():
     events = [
-        _ev("tool_call", {"tool": "hf_jobs", "arguments": {}}),
-        _ev("hf_job_submit", {"flavor": "a100-large"}),
+        _ev("tool_call", {"tool": "bash", "arguments": {}}),
         _ev("tool_output", {"success": False, "output": "RuntimeError: CUDA out of memory. Tried to allocate..."}),
     ]
     tags = tag_session(_traj(events))
-    assert "hf_job:oom" in tags
+    assert "compute:oom" in tags
 
 
 def test_sandbox_tags():
@@ -152,10 +141,10 @@ def test_feedback_tags():
 
 def test_task_training():
     events = [
-        _ev("tool_call", {"tool": "hf_jobs", "arguments": {
-            "script": "from trl import SFTTrainer\ntrainer = SFTTrainer(...)"
+        _ev("tool_call", {"tool": "bash", "arguments": {
+            "command": "from trl import SFTTrainer\ntrainer = SFTTrainer(...)"
         }}),
-        _ev("hf_job_submit", {"flavor": "a100-large"}),
+        _ev("sandbox_create", {"hardware": "cpu-basic"}),
     ]
     assert "task:training" in tag_session(_traj(events))
 
@@ -179,10 +168,10 @@ def test_task_data_prep():
 
 def test_no_duplicates_and_sorted():
     events = [
-        _ev("tool_call", {"tool": "hf_jobs"}),
-        _ev("tool_call", {"tool": "hf_jobs"}),  # duplicate
-        _ev("hf_job_submit", {"flavor": "a10g-small"}),
-        _ev("hf_job_submit", {"flavor": "a10g-small"}),
+        _ev("tool_call", {"tool": "research"}),
+        _ev("tool_call", {"tool": "research"}),  # duplicate
+        _ev("sandbox_create", {"hardware": "a10g-small"}),
+        _ev("sandbox_create", {"hardware": "a10g-small"}),
     ]
     tags = tag_session(_traj(events))
     assert tags == sorted(tags)

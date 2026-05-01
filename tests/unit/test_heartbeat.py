@@ -23,7 +23,6 @@ class _FakeConfig:
     heartbeat_interval_s = 60
     max_iterations = 10
     yolo_mode = False
-    confirm_cpu_jobs = False
     auto_file_upload = False
     reasoning_effort = None
     mcpServers: dict = {}

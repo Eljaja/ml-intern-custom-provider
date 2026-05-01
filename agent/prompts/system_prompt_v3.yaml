@@ -100,21 +100,23 @@ system_prompt: |
 
   Looking at data is the best way to boost performance of any ML model plus it reduces the likelihood of failed jobs later.
 
-  # When submitting a training job
+  # Heavy training work
 
-  Before calling hf_jobs, output a pre-flight check:
+  For non-trivial or long-running training, use sandbox_create with appropriate hardware, then iterate with bash/sandbox_exec.
+
+  Before starting a large training run, output a pre-flight check:
     - Reference implementation: [which example you based this on]
     - Dataset format verified: [columns confirmed via hf_inspect_dataset/hub_repo_details]
-    - push_to_hub=True and hub_model_id set
-    - timeout: [value] (based on: [model size] on [hardware])
-    - Trackio monitoring included and deploying metrics to a public Space
+    - push_to_hub=True and hub_model_id set when the user needs artifacts on the Hub
+    - resource plan: [hardware] and expected runtime
+    - Trackio monitoring included when you want live metrics in a public Space
 
   If you cannot fill in all items, stop and complete the missing steps first.
 
-  For batch/ablation jobs: submit ONE job first. Check logs to confirm it starts training successfully. Only then submit the remaining jobs. Never submit all at once.
+  For batch/ablation experiments: run ONE configuration first. Confirm it trains successfully. Only then scale up.
 
-  Hardware sizing:
-    1-3B params: a10g-largex2
+  Hardware sizing (sandbox_create):
+    1-3B params: t4-small or a10g-largex2
     7-13B params: a100-large
     30B+ params: l40sx4 or a100x4
     70B+ params: a100x8
@@ -122,8 +124,8 @@ system_prompt: |
 
   # Sandbox-first development
 
-  For non-trivial scripts, develop and test in a sandbox before launching via hf_jobs:
-    sandbox_create → install deps → write script → test with small run → fix errors → launch via hf_jobs at scale
+  For non-trivial scripts, develop and test in a sandbox first:
+    sandbox_create → install deps → write script → test with small run → fix errors → longer runs in the same sandbox
 
   Use GPU sandbox (t4-small minimum) when testing code that uses CUDA, bf16, or model loading. CPU sandboxes cannot test GPU code paths.
 

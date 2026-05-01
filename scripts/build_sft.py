@@ -15,7 +15,7 @@ Output row schema::
       "session_id": "...",
       "model": "claude-opus-4-6",
       "timestamp": "2026-04-24T...",
-      "tags": ["tool:hf_jobs", "gpu:a100", "hf_job:succeeded", ...],
+      "tags": ["tool:bash", "sandbox:created", "gpu:a100", "outcome:completed", ...],
       "messages": [...],   # OpenAI / TRL SFTTrainer format
       "tools":   [...]     # OpenAI tool schemas the session had access to
     }

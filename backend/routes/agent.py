@@ -33,7 +33,6 @@ from session_manager import MAX_SESSIONS, AgentSession, SessionCapacityError, se
 
 import user_quotas
 
-from agent.core.hf_access import get_jobs_access
 from agent.core.hf_tokens import resolve_hf_request_token, resolve_hf_router_token
 from agent.core.llm_params import _resolve_llm_params, use_custom_inference_openai_key_env
 
@@ -303,8 +302,7 @@ async def create_session(
     """Create a new agent session bound to the authenticated user.
 
     The user's HF access token is extracted from the Authorization header
-    and stored in the session so that tools (e.g. hf_jobs) can act on
-    behalf of the user.
+    and stored in the session so that tools can act on behalf of the user.
 
     Optional body ``{"model"?: <id>}`` selects the session's LLM; unknown
     ids are rejected (400). The Claude-quota gate runs at message-submit
@@ -473,24 +471,6 @@ async def get_user_quota(user: dict = Depends(get_current_user)) -> dict:
         "claude_used_today": used,
         "claude_daily_cap": cap,
         "claude_remaining": max(0, cap - used),
-    }
-
-
-@router.get("/user/jobs-access")
-async def get_jobs_access_info(request: Request, user: dict = Depends(get_current_user)) -> dict:
-    """Return the namespaces the current token can run HF Jobs under.
-
-    Credits are enforced by the HF API at job-creation time, not here —
-    the response only describes which wallets the caller is allowed to
-    pick from. Pro is irrelevant.
-    """
-    token = resolve_hf_request_token(request)
-
-    access = await get_jobs_access(token or "")
-    return {
-        "eligible_namespaces": access.eligible_namespaces if access else [],
-        "default_namespace": access.default_namespace if access else None,
-        "billing_url": "https://huggingface.co/settings/billing",
     }
 
 
