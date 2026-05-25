@@ -8,7 +8,8 @@ NOTIFY_TOOL_SPEC = {
         "Send an out-of-band notification to configured messaging destinations. "
         "Use this only when the user explicitly asked for proactive notifications "
         "or when the task requires reporting progress outside the chat. "
-        "Destinations must be named server-side configs such as 'slack.ops'."
+        "Destinations must be named server-side configs such as 'slack.ops' or "
+        "'zulip.ops'."
     ),
     "parameters": {
         "type": "object",

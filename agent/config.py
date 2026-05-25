@@ -65,6 +65,9 @@ DEFAULT_USER_CONFIG_PATH = (
 )
 SLACK_DEFAULT_DESTINATION = "slack.default"
 SLACK_DEFAULT_AUTO_EVENT_TYPES = ["approval_required", "error", "turn_complete"]
+ZULIP_DEFAULT_DESTINATION = "zulip.default"
+ZULIP_DEFAULT_TOPIC = "ml-intern"
+ZULIP_DEFAULT_AUTO_EVENT_TYPES = ["approval_required", "error", "turn_complete"]
 
 
 def _deep_merge_config(
@@ -160,6 +163,73 @@ def apply_slack_user_defaults(raw_config: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
+def apply_zulip_user_defaults(raw_config: dict[str, Any]) -> dict[str, Any]:
+    """Enable a default Zulip destination from env vars, when present."""
+    if not _env_bool("ML_INTERN_ZULIP_NOTIFICATIONS", True):
+        return raw_config
+
+    site = (os.environ.get("ZULIP_SITE") or "").strip().rstrip("/")
+    email = (
+        os.environ.get("ZULIP_BOT_EMAIL") or os.environ.get("ZULIP_EMAIL") or ""
+    ).strip()
+    api_key = (os.environ.get("ZULIP_API_KEY") or "").strip()
+    if not site or not email or not api_key:
+        return raw_config
+
+    message_type = (os.environ.get("ZULIP_MESSAGE_TYPE") or "stream").strip().lower()
+    if message_type not in {"stream", "private"}:
+        message_type = "stream"
+
+    stream = (os.environ.get("ZULIP_STREAM") or "").strip() or None
+    topic = (os.environ.get("ZULIP_TOPIC") or ZULIP_DEFAULT_TOPIC).strip()
+    to = (os.environ.get("ZULIP_TO") or "").strip() or None
+
+    if message_type == "stream" and not stream:
+        return raw_config
+    if message_type == "private" and not to:
+        return raw_config
+
+    config = dict(raw_config)
+    messaging = dict(config.get("messaging") or {})
+    destinations = dict(messaging.get("destinations") or {})
+    destination_name = (
+        os.environ.get("ML_INTERN_ZULIP_DESTINATION") or ZULIP_DEFAULT_DESTINATION
+    ).strip()
+
+    if destination_name not in destinations:
+        destination: dict[str, Any] = {
+            "provider": "zulip",
+            "site": site,
+            "email": email,
+            "api_key": api_key,
+            "message_type": message_type,
+            "topic": topic,
+            "allow_agent_tool": _env_bool("ML_INTERN_ZULIP_ALLOW_AGENT_TOOL", True),
+            "allow_auto_events": _env_bool("ML_INTERN_ZULIP_ALLOW_AUTO_EVENTS", True),
+        }
+        if message_type == "stream":
+            destination["stream"] = stream
+        else:
+            destination["to"] = to
+        destinations[destination_name] = destination
+
+    auto_events = _env_list("ML_INTERN_ZULIP_AUTO_EVENTS")
+    if auto_events is not None:
+        messaging["auto_event_types"] = auto_events
+    elif "auto_event_types" not in messaging:
+        messaging["auto_event_types"] = ZULIP_DEFAULT_AUTO_EVENT_TYPES
+
+    messaging["enabled"] = True
+    messaging["destinations"] = destinations
+    config["messaging"] = messaging
+    return config
+
+
+def apply_messaging_env_defaults(raw_config: dict[str, Any]) -> dict[str, Any]:
+    """Apply Zulip destinations from environment variables (.env)."""
+    return apply_zulip_user_defaults(raw_config)
+
+
 def substitute_env_vars(obj: Any) -> Any:
     """
     Recursively substitute environment variables in any data structure.
@@ -216,6 +286,7 @@ def load_config(
     if include_user_defaults:
         raw_config = _deep_merge_config(raw_config, _load_user_config())
         raw_config = apply_slack_user_defaults(raw_config)
+    raw_config = apply_messaging_env_defaults(raw_config)
 
     config_with_env = substitute_env_vars(raw_config)
     return Config.model_validate(config_with_env)

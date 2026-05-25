@@ -10,9 +10,7 @@ def _write_json(path, data):
     path.write_text(json.dumps(data), encoding="utf-8")
 
 
-def test_load_config_does_not_apply_slack_user_defaults_by_default(
-    tmp_path, monkeypatch
-):
+def test_load_config_does_not_apply_slack_user_defaults_by_default(tmp_path, monkeypatch):
     config_path = tmp_path / "config.json"
     _write_json(
         config_path,
@@ -58,6 +56,44 @@ def test_load_config_applies_slack_user_defaults_from_env(tmp_path, monkeypatch)
     assert destination.channel == "C123"
     assert destination.allow_agent_tool
     assert destination.allow_auto_events
+
+
+def test_load_config_applies_zulip_defaults_from_env(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    _write_json(config_path, {"model_name": "moonshotai/Kimi-K2.6"})
+    monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("SLACK_CHANNEL_ID", raising=False)
+    monkeypatch.setenv("ZULIP_SITE", "https://chat.example.com")
+    monkeypatch.setenv("ZULIP_BOT_EMAIL", "bot@example.com")
+    monkeypatch.setenv("ZULIP_API_KEY", "zulip-key")
+    monkeypatch.setenv("ZULIP_STREAM", "ml-agent")
+    monkeypatch.setenv("ZULIP_TOPIC", "alerts")
+
+    config = config_module.load_config(str(config_path))
+
+    assert config.messaging.enabled
+    destination = config.messaging.destinations["zulip.default"]
+    assert destination.provider == "zulip"
+    assert destination.site == "https://chat.example.com"
+    assert destination.email == "bot@example.com"
+    assert destination.api_key == "zulip-key"
+    assert destination.stream == "ml-agent"
+    assert destination.topic == "alerts"
+
+
+def test_zulip_user_defaults_can_be_disabled(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    _write_json(config_path, {"model_name": "moonshotai/Kimi-K2.6"})
+    monkeypatch.setenv("ML_INTERN_ZULIP_NOTIFICATIONS", "false")
+    monkeypatch.setenv("ZULIP_SITE", "https://chat.example.com")
+    monkeypatch.setenv("ZULIP_BOT_EMAIL", "bot@example.com")
+    monkeypatch.setenv("ZULIP_API_KEY", "zulip-key")
+    monkeypatch.setenv("ZULIP_STREAM", "ml-agent")
+
+    config = config_module.load_config(str(config_path))
+
+    assert not config.messaging.enabled
+    assert config.messaging.destinations == {}
 
 
 def test_load_config_merges_user_config_before_env_substitution(tmp_path, monkeypatch):

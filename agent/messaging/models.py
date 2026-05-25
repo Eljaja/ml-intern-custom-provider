@@ -1,4 +1,4 @@
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -24,7 +24,47 @@ class SlackDestinationConfig(BaseModel):
         return value
 
 
-DestinationConfig = Annotated[SlackDestinationConfig, Field(discriminator="provider")]
+class ZulipDestinationConfig(BaseModel):
+    provider: Literal["zulip"] = "zulip"
+    site: str
+    email: str
+    api_key: str
+    message_type: Literal["stream", "private"] = "stream"
+    stream: str | None = None
+    topic: str = "ml-intern"
+    to: str | None = None
+    allow_agent_tool: bool = False
+    allow_auto_events: bool = False
+
+    @field_validator("site", "email", "api_key", "topic")
+    @classmethod
+    def _require_non_empty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be empty")
+        return value
+
+    @field_validator("stream", "to")
+    @classmethod
+    def _normalize_optional(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @model_validator(mode="after")
+    def _validate_target(self) -> "ZulipDestinationConfig":
+        if self.message_type == "stream" and not self.stream:
+            raise ValueError("stream is required when message_type is 'stream'")
+        if self.message_type == "private" and not self.to:
+            raise ValueError("to is required when message_type is 'private'")
+        return self
+
+
+DestinationConfig = Annotated[
+    Union[SlackDestinationConfig, ZulipDestinationConfig],
+    Field(discriminator="provider"),
+]
 
 
 class MessagingConfig(BaseModel):
@@ -55,7 +95,9 @@ class MessagingConfig(BaseModel):
         seen: set[str] = set()
         for event_type in event_types:
             if event_type not in SUPPORTED_AUTO_EVENT_TYPES:
-                raise ValueError(f"unsupported auto event type '{event_type}'")
+                raise ValueError(
+                    f"unsupported auto event type '{event_type}'"
+                )
             if event_type not in seen:
                 normalized.append(event_type)
                 seen.add(event_type)
@@ -81,7 +123,11 @@ class MessagingConfig(BaseModel):
     def default_auto_destinations(self) -> list[str]:
         if not self.enabled:
             return []
-        return [name for name in self.destinations if self.can_auto_send(name)]
+        return [
+            name
+            for name in self.destinations
+            if self.can_auto_send(name)
+        ]
 
 
 class NotificationRequest(BaseModel):

@@ -2,6 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -12,6 +13,7 @@ from agent.core.session import Event, Session
 from agent.messaging.gateway import NotificationGateway
 from agent.messaging.models import NotificationRequest, NotificationResult
 from agent.messaging.slack import SlackProvider, _format_slack_mrkdwn
+from agent.messaging.zulip import ZulipProvider
 from agent.tools.notify_tool import notify_handler
 from backend.session_manager import AgentSession, SessionManager
 
@@ -64,7 +66,9 @@ def _config_with_messaging(**destination_overrides) -> Config:
     )
 
 
-def _test_session(config: Config, gateway, session_id: str = "session-test") -> Session:
+def _test_session(
+    config: Config, gateway, session_id: str = "session-test"
+) -> Session:
     return Session(
         asyncio.Queue(),
         config=config,
@@ -483,9 +487,7 @@ async def test_turn_complete_can_be_disabled_by_custom_auto_event_config():
 
 def test_session_manager_updates_notification_destinations_in_session_info():
     config = _config_with_messaging(allow_auto_events=True)
-    manager = SessionManager(
-        str(Path(__file__).resolve().parents[2] / "configs" / "cli_agent_config.json")
-    )
+    manager = SessionManager(str(Path(__file__).resolve().parents[2] / "configs" / "cli_agent_config.json"))
     manager.config = config
     manager.sessions = {}
 
