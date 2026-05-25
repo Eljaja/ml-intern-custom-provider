@@ -10,6 +10,102 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from agent.core.hf_tokens import get_hf_bill_to, resolve_hf_router_token
+from agent.core.local_models import (
+    LOCAL_MODEL_API_KEY_DEFAULT,
+    LOCAL_MODEL_API_KEY_ENV,
+    LOCAL_MODEL_BASE_URL_ENV,
+    is_reserved_local_model_id,
+    local_model_name,
+    local_model_provider,
+)
+
+
+def _resolve_hf_router_token(session_hf_token: str | None = None) -> str | None:
+    """Backward-compatible private wrapper used by tests and older imports."""
+    return resolve_hf_router_token(session_hf_token)
+
+
+def _patch_litellm_effort_validation() -> None:
+    """Neuter LiteLLM 1.83's hardcoded effort-level validation.
+
+    Context: at ``litellm/llms/anthropic/chat/transformation.py:~1443`` the
+    Anthropic adapter validates ``output_config.effort ∈ {high, medium,
+    low, max}`` and gates ``max`` behind an ``_is_opus_4_6_model`` check
+    that only matches the substring ``opus-4-6`` / ``opus_4_6``. Result:
+
+    * ``xhigh`` — valid on Anthropic's real API for Claude 4.7 — is
+      rejected pre-flight with "Invalid effort value: xhigh".
+    * ``max`` on Opus 4.7 is rejected with "effort='max' is only supported
+      by Claude Opus 4.6", even though Opus 4.7 accepts it in practice.
+
+    We don't want to maintain a parallel model table, so we let the
+    Anthropic API itself be the validator: widen ``_is_opus_4_6_model``
+    to also match ``opus-4-7``+ families, and drop the valid-effort-set
+    check entirely. If Anthropic rejects an effort level, we see a 400
+    and the cascade walks down — exactly the behavior we want for any
+    future model family.
+
+    Removable once litellm ships 1.83.8-stable (which merges PR #25867,
+    "Litellm day 0 opus 4.7 support") — see commit 0868a82 on their main
+    branch. Until then, this one-time patch is the escape hatch.
+    """
+    try:
+        from litellm.llms.anthropic.chat import transformation as _t
+    except Exception:
+        return
+
+    cfg = getattr(_t, "AnthropicConfig", None)
+    if cfg is None:
+        return
+
+    original = getattr(cfg, "_is_opus_4_6_model", None)
+    if original is None or getattr(original, "_hf_agent_patched", False):
+        return
+
+    def _widened(model: str) -> bool:
+        m = model.lower()
+        # Original 4.6 match plus any future Opus >= 4.6. We only need this
+        # to return True for families where "max" / "xhigh" are acceptable
+        # at the API; the cascade handles the case when they're not.
+        return any(
+            v in m
+            for v in (
+                "opus-4-6",
+                "opus_4_6",
+                "opus-4.6",
+                "opus_4.6",
+                "opus-4-7",
+                "opus_4_7",
+                "opus-4.7",
+                "opus_4.7",
+            )
+        )
+
+    _widened._hf_agent_patched = True  # type: ignore[attr-defined]
+    cfg._is_opus_4_6_model = staticmethod(_widened)
+
+
+_patch_litellm_effort_validation()
+
+
+# Effort levels accepted on the wire.
+#   Anthropic (4.6+):  low | medium | high | xhigh | max   (output_config.effort)
+#   OpenAI direct:     minimal | low | medium | high | xhigh (reasoning_effort top-level)
+#   HF router:         low | medium | high                 (extra_body.reasoning_effort)
+#
+# We validate *shape* here and let the probe cascade walk down on rejection;
+# we deliberately do NOT maintain a per-model capability table.
+_ANTHROPIC_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+_OPENAI_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
+_HF_EFFORTS = {"low", "medium", "high"}
+
+
+class UnsupportedEffortError(ValueError):
+    """The requested effort isn't valid for this provider's API surface.
+
+    Raised synchronously before any network call so the probe cascade can
+    skip levels the provider can't accept (e.g. ``max`` on HF router).
+    """
 
 
 def _load_inference_dotenv() -> None:
@@ -191,6 +287,46 @@ async def use_custom_inference_openai_key_env(model_name: str, llm_params: dict)
             os.environ["OPENAI_API_KEY"] = old
 
 
+def _local_api_base(base_url: str) -> str:
+    base = base_url.strip().rstrip("/")
+    if base.endswith("/v1"):
+        return base
+    return f"{base}/v1"
+
+
+def _resolve_local_model_params(
+    model_name: str,
+    reasoning_effort: str | None = None,
+    strict: bool = False,
+) -> dict:
+    if reasoning_effort and strict:
+        raise UnsupportedEffortError(
+            "Local OpenAI-compatible endpoints don't accept reasoning_effort"
+        )
+
+    local_name = local_model_name(model_name)
+    if local_name is None:
+        raise ValueError(f"Unsupported local model id: {model_name}")
+
+    provider = local_model_provider(model_name)
+    assert provider is not None
+    raw_base = (
+        os.environ.get(provider["base_url_env"])
+        or os.environ.get(LOCAL_MODEL_BASE_URL_ENV)
+        or provider["base_url_default"]
+    )
+    api_key = (
+        os.environ.get(provider["api_key_env"])
+        or os.environ.get(LOCAL_MODEL_API_KEY_ENV)
+        or LOCAL_MODEL_API_KEY_DEFAULT
+    )
+    return {
+        "model": f"openai/{local_name}",
+        "api_base": _local_api_base(raw_base),
+        "api_key": api_key,
+    }
+
+
 def _resolve_llm_params(
     model_name: str,
     session_hf_token: str | None = None,
@@ -221,6 +357,12 @@ def _resolve_llm_params(
       ``CUSTOM_INFERENCE_MODEL`` (comma-separated; default
       ``minimax/minimax-m2.7`` if unset), requests go to that OpenAI-compatible
       endpoint instead of the Hugging Face router.
+
+    • ``ollama/<model>``, ``vllm/<model>``, ``lm_studio/<model>``, and
+      ``llamacpp/<model>`` — local OpenAI-compatible endpoints. The id prefix
+      selects a configurable localhost base URL, and the model suffix is sent
+      to LiteLLM as ``openai/<model>``. These endpoints don't receive
+      ``reasoning_effort``.
 
     • Anything else is treated as a HuggingFace router id. We hit the
       auto-routing OpenAI-compatible endpoint at
@@ -288,16 +430,10 @@ def _resolve_llm_params(
                 params["reasoning_effort"] = reasoning_effort
         return params
 
-    # Optional OpenAI-compatible base URL (TGI, vLLM, or private proxy) — not HF Router.
     ci = _custom_inference_config(model_name)
     if ci is not None:
         custom_base, custom_key, base_id = ci
-        # LiteLLM's openai route uses litellm.utils.get_api_key(), which falls back to
-        # OPENAI_API_KEY if the per-request key is lost; some gateways also require an
-        # explicit Authorization header for custom api_base.
         auth = {"Authorization": f"Bearer {custom_key}"}
-        # ``headers`` and ``extra_headers`` both flow through LiteLLM (main + OpenAI
-        # adapter); set both so streaming/non-streaming paths still send ``Bearer``.
         custom_params: dict = {
             "model": f"openai/{base_id}",
             "api_base": custom_base,
@@ -315,6 +451,12 @@ def _resolve_llm_params(
             else:
                 custom_params["extra_body"] = {"reasoning_effort": hf_level}
         return custom_params
+
+    if is_reserved_local_model_id(model_name):
+        raise ValueError(f"Unsupported local model id: {model_name}")
+
+    if local_model_provider(model_name) is not None:
+        return _resolve_local_model_params(model_name, reasoning_effort, strict)
 
     hf_model = model_name.removeprefix("huggingface/")
     api_key = _resolve_hf_router_token(session_hf_token)

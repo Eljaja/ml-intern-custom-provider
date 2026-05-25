@@ -9,10 +9,12 @@ Inspired by claude-code's code-explorer agent pattern.
 
 import json
 import logging
+import time
 from typing import Any
 
 from litellm import Message, acompletion
 
+from agent.core import telemetry
 from agent.core.doom_loop import check_for_doom_loop
 from agent.core.llm_params import _resolve_llm_params, use_custom_inference_openai_key_env
 from agent.core.prompt_caching import with_prompt_caching
@@ -96,13 +98,13 @@ tell you what actually works.
   - DPO: needs "prompt", "chosen", "rejected"
   - GRPO: needs "prompt" only
 
-## GitHub code research
-- `github_find_examples`: Find working example scripts in HF repos (trl, transformers, etc.)
-- `github_read_file`: Read the actual implementation code. Use line_start/line_end for large files.
-
 ## Internet Archive
 - `archive_search(operation="search", query=...)`: Public catalog (books, audio, software, historical material). Lucene syntax, e.g. `mediatype:texts`, `collection:usfeddocs`.
 - `archive_search(operation="metadata", identifier=...)`: Full metadata and file list for an item id from search.
+
+## GitHub code research
+- `github_find_examples`: Find working example scripts in HF repos (trl, transformers, etc.)
+- `github_read_file`: Read the actual implementation code. Use line_start/line_end for large files.
 
 ## Documentation
 - `explore_hf_docs(endpoint)`: Search docs for a library. Endpoints: trl, transformers, datasets, peft, accelerate, trackio, vllm, inference-endpoints, etc.
@@ -285,6 +287,7 @@ async def research_handler(
         _agent_id = tool_call_id
     else:
         import uuid
+
         _agent_id = uuid.uuid4().hex[:8]
     _agent_label = "research: " + (task[:50] + "…" if len(task) > 50 else task)
 
@@ -292,12 +295,15 @@ async def research_handler(
         """Send a progress event to the UI so it doesn't look frozen."""
         try:
             await session.send_event(
-                Event(event_type="tool_log", data={
-                    "tool": "research",
-                    "log": text,
-                    "agent_id": _agent_id,
-                    "label": _agent_label,
-                })
+                Event(
+                    event_type="tool_log",
+                    data={
+                        "tool": "research",
+                        "log": text,
+                        "agent_id": _agent_id,
+                        "label": _agent_label,
+                    },
+                )
             )
         except Exception:
             pass
@@ -326,55 +332,93 @@ async def research_handler(
                 "Research sub-agent hit context max (%d tokens) — forcing summary",
                 _total_tokens,
             )
-            await _log(f"Context limit reached ({_total_tokens} tokens) — forcing wrap-up")
+            await _log(
+                f"Context limit reached ({_total_tokens} tokens) — forcing wrap-up"
+            )
             # Ask for a final summary with no tools
-            messages.append(Message(
-                role="user",
-                content=(
-                    "[SYSTEM: CONTEXT LIMIT REACHED] You have used all available context. "
-                    "Summarize your findings NOW. Do NOT call any more tools."
-                ),
-            ))
+            messages.append(
+                Message(
+                    role="user",
+                    content=(
+                        "[SYSTEM: CONTEXT LIMIT REACHED] You have used all available context. "
+                        "Summarize your findings NOW. Do NOT call any more tools."
+                    ),
+                )
+            )
             try:
                 _msgs, _ = with_prompt_caching(messages, None, llm_params.get("model"))
-                async with use_custom_inference_openai_key_env(research_model, llm_params):
-                    response = await acompletion(
-                        messages=_msgs,
-                        tools=None,  # no tools — force text response
-                        stream=False,
-                        timeout=120,
-                        **llm_params,
+                _t0 = time.monotonic()
+                response = await acompletion(
+                    messages=_msgs,
+                    tools=None,  # no tools — force text response
+                    stream=False,
+                    timeout=120,
+                    **llm_params,
+                )
+                # Telemetry is best-effort; a logging blip must never mask a
+                # valid LLM response (the surrounding except would convert it
+                # to "summary call failed").
+                try:
+                    await telemetry.record_llm_call(
+                        session,
+                        model=research_model,
+                        response=response,
+                        latency_ms=int((time.monotonic() - _t0) * 1000),
+                        finish_reason=response.choices[0].finish_reason
+                        if response.choices
+                        else None,
+                        kind="research",
                     )
+                except Exception as _telem_err:
+                    logger.debug("research telemetry failed: %s", _telem_err)
                 content = response.choices[0].message.content or ""
-                return content or "Research context exhausted — no summary produced.", bool(content)
+                return (
+                    content or "Research context exhausted — no summary produced.",
+                    bool(content),
+                )
             except Exception:
                 return "Research context exhausted and summary call failed.", False
 
         if not _warned_context and _total_tokens >= _RESEARCH_CONTEXT_WARN:
             _warned_context = True
             await _log(f"Context at {_total_tokens} tokens — nudging to wrap up")
-            messages.append(Message(
-                role="user",
-                content=(
-                    "[SYSTEM: You have used 75% of your context budget. "
-                    "Start wrapping up: finish any critical lookups, then "
-                    "produce your final summary within the next 1-2 iterations.]"
-                ),
-            ))
+            messages.append(
+                Message(
+                    role="user",
+                    content=(
+                        "[SYSTEM: You have used 75% of your context budget. "
+                        "Start wrapping up: finish any critical lookups, then "
+                        "produce your final summary within the next 1-2 iterations.]"
+                    ),
+                )
+            )
 
         try:
             _msgs, _tools = with_prompt_caching(
                 messages, tool_specs if tool_specs else None, llm_params.get("model")
             )
-            async with use_custom_inference_openai_key_env(research_model, llm_params):
-                response = await acompletion(
-                    messages=_msgs,
-                    tools=_tools,
-                    tool_choice="auto",
-                    stream=False,
-                    timeout=120,
-                    **llm_params,
+            _t0 = time.monotonic()
+            response = await acompletion(
+                messages=_msgs,
+                tools=_tools,
+                tool_choice="auto",
+                stream=False,
+                timeout=120,
+                **llm_params,
+            )
+            try:
+                await telemetry.record_llm_call(
+                    session,
+                    model=research_model,
+                    response=response,
+                    latency_ms=int((time.monotonic() - _t0) * 1000),
+                    finish_reason=response.choices[0].finish_reason
+                    if response.choices
+                    else None,
+                    kind="research",
                 )
+            except Exception as _telem_err:
+                logger.debug("research telemetry failed: %s", _telem_err)
         except Exception as e:
             logger.error("Research sub-agent LLM error: %s", e)
             return f"Research agent LLM error: {e}", False
@@ -398,11 +442,13 @@ async def research_handler(
         # LiteLLM's raw Message carries `provider_specific_fields` and
         # `reasoning_content`, which the HF router's OpenAI schema rejects
         # if we echo them back in the next request.
-        messages.append(Message(
-            role="assistant",
-            content=msg.content,
-            tool_calls=msg.tool_calls,
-        ))
+        messages.append(
+            Message(
+                role="assistant",
+                content=msg.content,
+                tool_calls=msg.tool_calls,
+            )
+        )
         for tc in msg.tool_calls:
             try:
                 tool_args = json.loads(tc.function.arguments)
@@ -457,23 +503,38 @@ async def research_handler(
 
     # ── Iteration limit: try to salvage findings ──
     await _log("Iteration limit reached — extracting summary")
-    messages.append(Message(
-        role="user",
-        content=(
-            "[SYSTEM: ITERATION LIMIT] You have reached the maximum number of research "
-            "iterations. Summarize ALL findings so far. Do NOT call any more tools."
-        ),
-    ))
+    messages.append(
+        Message(
+            role="user",
+            content=(
+                "[SYSTEM: ITERATION LIMIT] You have reached the maximum number of research "
+                "iterations. Summarize ALL findings so far. Do NOT call any more tools."
+            ),
+        )
+    )
     try:
         _msgs, _ = with_prompt_caching(messages, None, llm_params.get("model"))
-        async with use_custom_inference_openai_key_env(research_model, llm_params):
-            response = await acompletion(
-                messages=_msgs,
-                tools=None,
-                stream=False,
-                timeout=120,
-                **llm_params,
+        _t0 = time.monotonic()
+        response = await acompletion(
+            messages=_msgs,
+            tools=None,
+            stream=False,
+            timeout=120,
+            **llm_params,
+        )
+        try:
+            await telemetry.record_llm_call(
+                session,
+                model=research_model,
+                response=response,
+                latency_ms=int((time.monotonic() - _t0) * 1000),
+                finish_reason=response.choices[0].finish_reason
+                if response.choices
+                else None,
+                kind="research",
             )
+        except Exception as _telem_err:
+            logger.debug("research telemetry failed: %s", _telem_err)
         content = response.choices[0].message.content or ""
         if content:
             return content, True

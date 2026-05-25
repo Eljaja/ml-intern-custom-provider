@@ -28,6 +28,7 @@ dependencies = [
     "websockets>=13.0",
     "apscheduler>=3.10,<4",
     "pymongo>=4.17.0",
+    "python-multipart>=0.0.20",
 ]
 
 [project.optional-dependencies]
@@ -44,6 +45,7 @@ eval = [
 dev = [
     "pytest>=9.0.2",
     "pytest-asyncio>=1.2.0",
+    "ruff>=0.15.12",
 ]
 
 # All dependencies (eval + dev)

@@ -23,21 +23,42 @@ def _session_row():
         "messages": [
             {"role": "system", "content": "You are an agent"},
             {"role": "user", "content": "fine-tune llama"},
-            {"role": "assistant", "content": None, "tool_calls": [
-                {"id": "c1", "type": "function",
-                 "function": {"name": "bash", "arguments": '{"command":"from trl import SFTTrainer"}'}},
-            ]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "arguments": '{"command":"from trl import SFTTrainer"}',
+                        },
+                    },
+                ],
+            },
             {"role": "tool", "tool_call_id": "c1", "content": "ok"},
             {"role": "assistant", "content": "done"},
         ],
         "events": [
-            {"timestamp": "2026-04-24T10:00:04", "event_type": "sandbox_create",
-             "data": {"hardware": "a100-large", "sandbox_id": "s1"}},
-            {"timestamp": "2026-04-24T10:00:05", "event_type": "tool_call",
-             "data": {"tool": "bash",
-                      "arguments": {"command": "from trl import SFTTrainer"}}},
-            {"timestamp": "2026-04-24T10:45:05", "event_type": "turn_complete",
-             "data": {}},
+            {
+                "timestamp": "2026-04-24T10:00:04",
+                "event_type": "sandbox_create",
+                "data": {"hardware": "a100-large", "sandbox_id": "s1"},
+            },
+            {
+                "timestamp": "2026-04-24T10:00:05",
+                "event_type": "tool_call",
+                "data": {
+                    "tool": "bash",
+                    "arguments": {"command": "from trl import SFTTrainer"},
+                },
+            },
+            {
+                "timestamp": "2026-04-24T10:45:05",
+                "event_type": "turn_complete",
+                "data": {},
+            },
         ],
         "tools": [{"type": "function", "function": {"name": "bash"}}],
     }

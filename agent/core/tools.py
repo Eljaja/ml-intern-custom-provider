@@ -9,8 +9,6 @@ import warnings
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
-logger = logging.getLogger(__name__)
-
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from mcp.types import EmbeddedResource, ImageContent, TextContent
@@ -67,6 +65,8 @@ from agent.tools.web_search_tool import WEB_SEARCH_TOOL_SPEC, web_search_handler
 warnings.filterwarnings(
     "ignore", category=DeprecationWarning, module="aiohttp.connector"
 )
+
+logger = logging.getLogger(__name__)
 
 NOT_ALLOWED_TOOL_NAMES = ["hf_doc_search", "hf_doc_fetch", "hf_whoami"]
 
@@ -135,7 +135,12 @@ class ToolRouter:
     Based on codex-rs/core/src/tools/router.rs
     """
 
-    def __init__(self, mcp_servers: dict[str, MCPServerConfig], hf_token: str | None = None, local_mode: bool = False):
+    def __init__(
+        self,
+        mcp_servers: dict[str, MCPServerConfig],
+        hf_token: str | None = None,
+        local_mode: bool = False,
+    ):
         self.tools: dict[str, ToolSpec] = {}
         self.mcp_servers: dict[str, dict[str, Any]] = {}
 
@@ -148,7 +153,9 @@ class ToolRouter:
             for name, server in mcp_servers.items():
                 data = server.model_dump()
                 if hf_token:
-                    data.setdefault("headers", {})["Authorization"] = f"Bearer {hf_token}"
+                    data.setdefault("headers", {})["Authorization"] = (
+                        f"Bearer {hf_token}"
+                    )
                 mcp_servers_payload[name] = data
             self.mcp_client = Client({"mcpServers": mcp_servers_payload})
         self._mcp_initialized = False
@@ -222,7 +229,9 @@ class ToolRouter:
                 await self.register_mcp_tools()
                 self._mcp_initialized = True
             except Exception as e:
-                logger.warning("MCP connection failed, continuing without MCP tools: %s", e)
+                logger.warning(
+                    "MCP connection failed, continuing without MCP tools: %s", e
+                )
                 self.mcp_client = None
 
         await self.register_openapi_tool()

@@ -1,12 +1,36 @@
 import { useState, useCallback, useEffect, useRef, KeyboardEvent } from 'react';
-import { Box, TextField, IconButton, CircularProgress } from '@mui/material';
+import {
+  Alert,
+  Box,
+  TextField,
+  IconButton,
+  CircularProgress,
+  Typography,
+  Menu,
+  MenuItem,
+  ListItemIcon,
+  ListItemText,
+  Chip,
+  LinearProgress,
+  Snackbar,
+  Tooltip,
+} from '@mui/material';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
+import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import StopIcon from '@mui/icons-material/Stop';
-import { apiFetch } from '@/utils/api';
+import AddIcon from '@mui/icons-material/Add';
+import { apiFetch, apiUpload } from '@/utils/api';
 import { useUserQuota } from '@/hooks/useUserQuota';
 import ClaudeCapDialog from '@/components/ClaudeCapDialog';
 import { useAgentStore } from '@/store/agentStore';
-import { CLAUDE_MODEL_PATH, FIRST_FREE_MODEL_PATH, isClaudePath } from '@/utils/model';
+import { useSessionStore } from '@/store/sessionStore';
+import {
+  CLAUDE_MODEL_PATH,
+  FIRST_FREE_MODEL_PATH,
+  GPT_55_MODEL_PATH,
+  isClaudePath,
+  isPremiumPath,
+} from '@/utils/model';
 
 // Model configuration
 interface ModelOption {
@@ -23,7 +47,7 @@ const getHfAvatarUrl = (modelId: string) => {
   return `https://huggingface.co/api/avatars/${org}`;
 };
 
-const MODEL_OPTIONS: ModelOption[] = [
+const DEFAULT_MODEL_OPTIONS: ModelOption[] = [
   {
     id: 'kimi-k2.6',
     name: 'Kimi K2.6',
@@ -41,6 +65,13 @@ const MODEL_OPTIONS: ModelOption[] = [
     recommended: true,
   },
   {
+    id: 'gpt-5.5',
+    name: 'GPT-5.5',
+    description: 'OpenAI',
+    modelPath: GPT_55_MODEL_PATH,
+    avatarUrl: 'https://huggingface.co/api/avatars/openai',
+  },
+  {
     id: 'minimax-m2.7',
     name: 'MiniMax M2.7',
     description: 'Novita',
@@ -54,30 +85,163 @@ const MODEL_OPTIONS: ModelOption[] = [
     modelPath: 'zai-org/GLM-5.1',
     avatarUrl: getHfAvatarUrl('zai-org/GLM-5.1'),
   },
+  {
+    id: 'deepseek-v4-pro',
+    name: 'DeepSeek V4 Pro',
+    description: 'DeepInfra',
+    modelPath: 'deepseek-ai/DeepSeek-V4-Pro:deepinfra',
+    avatarUrl: getHfAvatarUrl('deepseek-ai/DeepSeek-V4-Pro'),
+  },
 ];
+
+const findModelByPath = (path: string, options: ModelOption[]): ModelOption | undefined => {
+  if (isClaudePath(path)) {
+    const claude = options.find(isClaudeModel);
+    if (claude) return claude;
+  }
+  return options.find(m => m.modelPath === path || path?.includes(m.id));
+};
+
+const readApiErrorMessage = async (res: Response, fallback: string): Promise<string> => {
+  try {
+    const data = await res.json();
+    const detail = data?.detail;
+    if (typeof detail === 'string') return detail;
+    if (detail && typeof detail.message === 'string') return detail.message;
+    if (detail && typeof detail.error === 'string') return detail.error;
+  } catch {
+    /* ignore malformed error bodies */
+  }
+  return fallback;
+};
 
 interface ChatInputProps {
   sessionId?: string;
+  initialModelPath?: string | null;
   onSend: (text: string) => void;
   onStop?: () => void;
+  onDatasetUploaded?: () => Promise<boolean> | boolean;
   isProcessing?: boolean;
   disabled?: boolean;
   placeholder?: string;
 }
 
-const isClaudeModel = (m: ModelOption) => isClaudePath(m.modelPath);
-const firstFreeModel = () => MODEL_OPTIONS.find(m => !isClaudeModel(m)) ?? MODEL_OPTIONS[0];
+interface DatasetUploadResponse {
+  session_id: string;
+  repo_id: string;
+  repo_type: 'dataset';
+  private: true;
+  upload_id: string;
+  config_name: string;
+  filename: string;
+  path_in_repo: string;
+  size_bytes: number;
+  format: 'csv' | 'json' | 'jsonl';
+  hub_url: string;
+  load_dataset_snippet: string;
+}
 
-export default function ChatInput({ sessionId, onSend, onStop, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
+const MAX_DATASET_UPLOAD_BYTES = 100 * 1024 * 1024;
+const DATASET_UPLOAD_ACCEPT = '.csv,.json,.jsonl';
+const DATASET_UPLOAD_EXTENSIONS = new Set(['csv', 'json', 'jsonl']);
+
+const isClaudeModel = (m: ModelOption) => isClaudePath(m.modelPath);
+const isPremiumModel = (m: ModelOption) => isPremiumPath(m.modelPath);
+const firstFreeModel = (options: ModelOption[]) => options.find(m => !isPremiumModel(m)) ?? options[0];
+
+const formatBytes = (bytes: number) => {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const datasetRepoUrl = (repoId: string) => (
+  `https://huggingface.co/datasets/${repoId.split('/').map(encodeURIComponent).join('/')}`
+);
+
+export default function ChatInput({ sessionId, initialModelPath, onSend, onStop, onDatasetUploaded, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>(DEFAULT_MODEL_OPTIONS);
+  const modelOptionsRef = useRef<ModelOption[]>(DEFAULT_MODEL_OPTIONS);
+  const sessionIdRef = useRef<string | undefined>(sessionId);
+  const [selectedModelId, setSelectedModelId] = useState<string>(
+    () => findModelByPath(initialModelPath ?? '', DEFAULT_MODEL_OPTIONS)?.id ?? DEFAULT_MODEL_OPTIONS[0].id,
+  );
+  const [modelAnchorEl, setModelAnchorEl] = useState<null | HTMLElement>(null);
   const { quota, refresh: refreshQuota } = useUserQuota();
-  // Daily-cap dialog: opened when a 429 from the chat transport indicates
-  // Opus quota is exhausted. Open state is in the store so the hook layer
-  // can flip it without extra props.
+  // The daily-cap dialog is triggered from two places: (a) a 429 returned
+  // from the chat transport when the user tries to send on a premium model over cap —
+  // surfaced via the agent-store flag — and (b) nothing else right now
+  // (switching models is free). Keeping the open state in the store means
+  // the hook layer can flip it without threading props through.
   const claudeQuotaExhausted = useAgentStore((s) => s.claudeQuotaExhausted);
   const setClaudeQuotaExhausted = useAgentStore((s) => s.setClaudeQuotaExhausted);
+  const updateSessionModel = useSessionStore((s) => s.updateSessionModel);
+  const [modelSwitchError, setModelSwitchError] = useState<string | null>(null);
+  const [datasetUploadError, setDatasetUploadError] = useState<string | null>(null);
+  const [datasetUploadSuccess, setDatasetUploadSuccess] = useState<string | null>(null);
+  const [uploadedDatasets, setUploadedDatasets] = useState<DatasetUploadResponse[]>([]);
+  const [isUploadingDataset, setIsUploadingDataset] = useState(false);
+  const [datasetUploadProgress, setDatasetUploadProgress] = useState<number | null>(null);
   const lastSentRef = useRef<string>('');
+
+  useEffect(() => {
+    modelOptionsRef.current = modelOptions;
+  }, [modelOptions]);
+
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch('/api/config/model')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.available) return;
+        const claude = data.available.find((m: { provider?: string; id?: string }) => (
+          m.provider === 'anthropic' && m.id
+        ));
+        if (!claude?.id) return;
+
+        const next = DEFAULT_MODEL_OPTIONS.map((option) => (
+          isClaudeModel(option)
+            ? { ...option, modelPath: claude.id, name: claude.label ?? option.name }
+            : option
+        ));
+        modelOptionsRef.current = next;
+        setModelOptions(next);
+        if (!sessionIdRef.current) {
+          const current = data.current ? findModelByPath(data.current, next) : null;
+          if (current) setSelectedModelId(current.id);
+        }
+      })
+      .catch(() => { /* ignore */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Model is per-session: fetch this tab's current model every time the
+  // session changes. Other tabs keep their own selections independently.
+  useEffect(() => {
+    if (!sessionId) return;
+    let cancelled = false;
+    apiFetch(`/api/session/${sessionId}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled) return;
+        if (data?.model) {
+          const model = findModelByPath(data.model, modelOptionsRef.current);
+          if (model) setSelectedModelId(model.id);
+          updateSessionModel(sessionId, data.model);
+        }
+      })
+      .catch(() => { /* ignore */ });
+    return () => { cancelled = true; };
+  }, [sessionId, updateSessionModel]);
+
+  const selectedModel = modelOptions.find(m => m.id === selectedModelId) || modelOptions[0];
 
   // Auto-focus the textarea when the session becomes ready
   useEffect(() => {
@@ -87,20 +251,95 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
   }, [disabled, isProcessing]);
 
   const handleSend = useCallback(() => {
-    if (input.trim() && !disabled) {
+    if (input.trim() && !disabled && !isUploadingDataset) {
       lastSentRef.current = input;
       onSend(input);
       setInput('');
     }
-  }, [input, disabled, onSend]);
+  }, [input, disabled, isUploadingDataset, onSend]);
 
-  // When the chat transport reports a Claude-quota 429, restore the typed
+  const handleDatasetUploadClick = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const handleDatasetFileChange = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = '';
+      if (!file) return;
+
+      if (!sessionId) {
+        setDatasetUploadError('Start a session before uploading a dataset.');
+        return;
+      }
+
+      const extension = file.name.split('.').pop()?.toLowerCase() || '';
+      if (!DATASET_UPLOAD_EXTENSIONS.has(extension)) {
+        setDatasetUploadError('Only CSV, JSON, and JSONL dataset files are supported.');
+        return;
+      }
+      if (file.size > MAX_DATASET_UPLOAD_BYTES) {
+        setDatasetUploadError(
+          `Dataset files must be 100 MB or smaller. ${file.name} is ${formatBytes(file.size)}.`
+        );
+        return;
+      }
+      if (file.size === 0) {
+        setDatasetUploadError('Uploaded dataset file is empty.');
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('file', file);
+      setIsUploadingDataset(true);
+      setDatasetUploadProgress(0);
+      setDatasetUploadError(null);
+      setDatasetUploadSuccess(null);
+      try {
+        const res = await apiUpload(`/api/session/${sessionId}/datasets`, formData, {
+          onProgress: ({ percent }) => {
+            setDatasetUploadProgress(percent !== null && percent < 100 ? percent : null);
+          },
+        });
+        if (!res.ok) {
+          setDatasetUploadError(await readApiErrorMessage(res, 'Dataset upload failed.'));
+          return;
+        }
+        const payload = await res.json() as DatasetUploadResponse;
+        setUploadedDatasets((previous) => [payload, ...previous]);
+        setDatasetUploadSuccess(`Uploaded ${payload.filename} to ${payload.repo_id}`);
+        await onDatasetUploaded?.();
+      } catch (error) {
+        setDatasetUploadError(
+          error instanceof Error ? error.message : 'Dataset upload failed.'
+        );
+      } finally {
+        setIsUploadingDataset(false);
+        setDatasetUploadProgress(null);
+      }
+    },
+    [sessionId, onDatasetUploaded],
+  );
+
+  // When the chat transport reports a premium-model quota 429, restore the typed
   // text so the user doesn't lose their message.
   useEffect(() => {
     if (claudeQuotaExhausted && lastSentRef.current) {
       setInput(lastSentRef.current);
     }
   }, [claudeQuotaExhausted]);
+
+  useEffect(() => {
+    if (!datasetUploadError) return;
+    const timeout = window.setTimeout(() => setDatasetUploadError(null), 7000);
+    return () => window.clearTimeout(timeout);
+  }, [datasetUploadError]);
+
+  useEffect(() => {
+    if (!datasetUploadSuccess) return;
+    const timeout = window.setTimeout(() => setDatasetUploadSuccess(null), 5000);
+    return () => window.clearTimeout(timeout);
+  }, [datasetUploadSuccess]);
 
   // Refresh the quota display whenever the session changes (user might
   // have started another tab that spent quota).
@@ -119,24 +358,54 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
     [handleSend]
   );
 
+  const handleModelClick = (event: React.MouseEvent<HTMLElement>) => {
+    setModelAnchorEl(event.currentTarget);
+  };
+
+  const handleModelClose = () => {
+    setModelAnchorEl(null);
+  };
+
+  const handleSelectModel = async (model: ModelOption) => {
+    handleModelClose();
+    if (!sessionId) return;
+    try {
+      const res = await apiFetch(`/api/session/${sessionId}/model`, {
+        method: 'POST',
+        body: JSON.stringify({ model: model.modelPath }),
+      });
+      if (res.ok) {
+        setSelectedModelId(model.id);
+        updateSessionModel(sessionId, model.modelPath);
+        setModelSwitchError(null);
+        return;
+      }
+      setModelSwitchError(await readApiErrorMessage(res, 'Could not switch model.'));
+    } catch (error) {
+      setModelSwitchError(error instanceof Error ? error.message : 'Could not switch model.');
+    }
+  };
+
   // Dialog close: just clear the flag. The typed text is already restored.
   const handleCapDialogClose = useCallback(() => {
     setClaudeQuotaExhausted(false);
   }, [setClaudeQuotaExhausted]);
 
   // "Use a free model" — switch the current session to Kimi (or the first
-  // non-Anthropic option) and auto-retry the send that tripped the cap.
+  // non-premium option) and auto-retry the send that tripped the cap.
   const handleUseFreeModel = useCallback(async () => {
     setClaudeQuotaExhausted(false);
     if (!sessionId) return;
-    const free = MODEL_OPTIONS.find(m => m.modelPath === FIRST_FREE_MODEL_PATH)
-      ?? firstFreeModel();
+    const free = modelOptions.find(m => m.modelPath === FIRST_FREE_MODEL_PATH)
+      ?? firstFreeModel(modelOptions);
     try {
       const res = await apiFetch(`/api/session/${sessionId}/model`, {
         method: 'POST',
         body: JSON.stringify({ model: free.modelPath }),
       });
       if (res.ok) {
+        setSelectedModelId(free.id);
+        updateSessionModel(sessionId, free.modelPath);
         const retryText = lastSentRef.current;
         if (retryText) {
           onSend(retryText);
@@ -145,19 +414,30 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
         }
       }
     } catch { /* ignore */ }
-  }, [sessionId, onSend, setClaudeQuotaExhausted]);
+  }, [sessionId, onSend, setClaudeQuotaExhausted, modelOptions, updateSessionModel]);
 
-  const handleClaudeUpgradeClick = useCallback(async () => {
+  const handlePremiumUpgradeClick = useCallback(async () => {
     if (!sessionId) return;
     try {
       await apiFetch(`/api/pro-click/${sessionId}`, {
         method: 'POST',
-        body: JSON.stringify({ source: 'claude_cap_dialog', target: 'pro_pricing' }),
+        body: JSON.stringify({ source: 'premium_cap_dialog', target: 'pro_pricing' }),
       });
     } catch {
       /* tracking is best-effort */
     }
   }, [sessionId]);
+
+
+  // Hide the chip until the user has actually burned quota; opening a
+  // premium-model session without sending should not populate a counter.
+  const premiumChip = (() => {
+    if (!quota || quota.premiumUsedToday === 0) return null;
+    if (quota.plan === 'free') {
+      return quota.premiumRemaining > 0 ? 'Free today' : 'Pro only';
+    }
+    return `${quota.premiumUsedToday}/${quota.premiumDailyCap} today`;
+  })();
 
   return (
     <Box
@@ -172,9 +452,12 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
         <Box
           className="composer"
           sx={{
-            display: 'flex',
-            gap: '10px',
-            alignItems: 'flex-start',
+            display: 'grid',
+            gridTemplateColumns: 'auto 1fr auto',
+            gridTemplateRows: 'auto auto',
+            columnGap: '10px',
+            rowGap: '4px',
+            alignItems: 'end',
             bgcolor: 'var(--composer-bg)',
             borderRadius: 'var(--radius-md)',
             p: '12px',
@@ -210,7 +493,7 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
                 }
             }}
             sx={{
-                flex: 1,
+                gridColumn: '1 / -1',
                 '& .MuiInputBase-root': {
                     p: 0,
                     backgroundColor: 'transparent',
@@ -221,11 +504,46 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
                 }
             }}
           />
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={DATASET_UPLOAD_ACCEPT}
+            onChange={handleDatasetFileChange}
+            style={{ display: 'none' }}
+          />
+          <Box sx={{ gridColumn: '1', gridRow: '2', display: 'flex' }}>
+            <Tooltip title="Upload dataset">
+              <span>
+                <IconButton
+                  onClick={handleDatasetUploadClick}
+                  disabled={disabled || isProcessing || isUploadingDataset || !sessionId}
+                  sx={{
+                    p: 1,
+                    borderRadius: '50%',
+                    color: uploadedDatasets.length ? 'var(--accent-yellow)' : 'var(--muted-text)',
+                    transition: 'all 0.2s',
+                    '&:hover': {
+                      color: 'var(--accent-yellow)',
+                      bgcolor: 'var(--hover-bg)',
+                    },
+                    '&.Mui-disabled': {
+                      opacity: 0.3,
+                    },
+                  }}
+                  aria-label="Upload dataset"
+                >
+                  <AddIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
+          </Box>
           {isProcessing ? (
             <IconButton
               onClick={onStop}
               sx={{
-                mt: 1,
+                gridColumn: '3',
+                gridRow: '2',
+                justifySelf: 'end',
                 p: 1.5,
                 borderRadius: '10px',
                 color: 'var(--muted-text)',
@@ -245,9 +563,11 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
           ) : (
             <IconButton
               onClick={handleSend}
-              disabled={disabled || !input.trim()}
+              disabled={disabled || isUploadingDataset || !input.trim()}
               sx={{
-                mt: 1,
+                gridColumn: '3',
+                gridRow: '2',
+                justifySelf: 'end',
                 p: 1,
                 borderRadius: '10px',
                 color: 'var(--muted-text)',
@@ -265,15 +585,204 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
             </IconButton>
           )}
         </Box>
+        {isUploadingDataset && (
+          <Box sx={{ mt: 1, px: 0.5 }}>
+            <LinearProgress
+              variant={datasetUploadProgress === null ? 'indeterminate' : 'determinate'}
+              value={datasetUploadProgress ?? 0}
+              aria-label="Dataset upload progress"
+              sx={{
+                height: 4,
+                borderRadius: 999,
+                bgcolor: 'rgba(255,255,255,0.08)',
+                '& .MuiLinearProgress-bar': {
+                  borderRadius: 999,
+                  bgcolor: 'var(--accent-yellow)',
+                },
+              }}
+            />
+          </Box>
+        )}
+        {(datasetUploadError || datasetUploadSuccess) && (
+          <Box sx={{ display: 'flex', justifyContent: 'center', mt: 1 }}>
+            <Alert
+              severity={datasetUploadError ? 'error' : 'success'}
+              variant="filled"
+              onClose={() => {
+                setDatasetUploadError(null);
+                setDatasetUploadSuccess(null);
+              }}
+              sx={{ fontSize: '0.8rem', maxWidth: 520, width: '100%' }}
+            >
+              {datasetUploadError ?? datasetUploadSuccess}
+            </Alert>
+          </Box>
+        )}
+        {uploadedDatasets.length > 0 && (
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, justifyContent: 'center', mt: 1 }}>
+            {uploadedDatasets.map((dataset) => (
+              <Chip
+                key={dataset.upload_id}
+                size="small"
+                label={`Dataset: ${dataset.filename}`}
+                component="a"
+                href={datasetRepoUrl(dataset.repo_id)}
+                target="_blank"
+                rel="noreferrer"
+                clickable
+                sx={{
+                  maxWidth: '100%',
+                  bgcolor: 'rgba(255,255,255,0.08)',
+                  color: 'var(--text)',
+                  border: '1px solid var(--divider)',
+                  '& .MuiChip-label': {
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  },
+                }}
+              />
+            ))}
+          </Box>
+        )}
+
+        {/* Powered By Badge */}
+        <Box
+          onClick={handleModelClick}
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            mt: 1.5,
+            gap: 0.8,
+            opacity: 0.6,
+            cursor: 'pointer',
+            transition: 'opacity 0.2s',
+            '&:hover': {
+              opacity: 1
+            }
+          }}
+        >
+          <Typography variant="caption" sx={{ fontSize: '10px', color: 'var(--muted-text)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500 }}>
+            powered by
+          </Typography>
+          <img
+            src={selectedModel.avatarUrl}
+            alt={selectedModel.name}
+            style={{ height: '14px', width: '14px', objectFit: 'contain', borderRadius: '2px' }}
+          />
+          <Typography variant="caption" sx={{ fontSize: '10px', color: 'var(--text)', fontWeight: 600, letterSpacing: '0.02em' }}>
+            {selectedModel.name}
+          </Typography>
+          <ArrowDropDownIcon sx={{ fontSize: '14px', color: 'var(--muted-text)' }} />
+        </Box>
+
+        {/* Model Selection Menu */}
+        <Menu
+          anchorEl={modelAnchorEl}
+          open={Boolean(modelAnchorEl)}
+          onClose={handleModelClose}
+          anchorOrigin={{
+            vertical: 'top',
+            horizontal: 'center',
+          }}
+          transformOrigin={{
+            vertical: 'bottom',
+            horizontal: 'center',
+          }}
+          slotProps={{
+            paper: {
+              sx: {
+                bgcolor: 'var(--panel)',
+                border: '1px solid var(--divider)',
+                mb: 1,
+                maxHeight: '400px',
+              }
+            }
+          }}
+        >
+          {modelOptions.map((model) => (
+            <MenuItem
+              key={model.id}
+              onClick={() => handleSelectModel(model)}
+              selected={selectedModelId === model.id}
+              sx={{
+                py: 1.5,
+                '&.Mui-selected': {
+                  bgcolor: 'rgba(255,255,255,0.05)',
+                }
+              }}
+            >
+              <ListItemIcon>
+                <img
+                  src={model.avatarUrl}
+                  alt={model.name}
+                  style={{ width: 24, height: 24, borderRadius: '4px', objectFit: 'cover' }}
+                />
+              </ListItemIcon>
+              <ListItemText
+                primary={
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    {model.name}
+                    {model.recommended && (
+                      <Chip
+                        label="Recommended"
+                        size="small"
+                        sx={{
+                          height: '18px',
+                          fontSize: '10px',
+                          bgcolor: 'var(--accent-yellow)',
+                          color: '#000',
+                          fontWeight: 600,
+                        }}
+                      />
+                    )}
+                    {isPremiumModel(model) && premiumChip && (
+                      <Chip
+                        label={premiumChip}
+                        size="small"
+                        sx={{
+                          height: '18px',
+                          fontSize: '10px',
+                          bgcolor: 'rgba(255,255,255,0.08)',
+                          color: 'var(--muted-text)',
+                          fontWeight: 600,
+                        }}
+                      />
+                    )}
+                  </Box>
+                }
+                secondary={model.description}
+                secondaryTypographyProps={{
+                  sx: { fontSize: '12px', color: 'var(--muted-text)' }
+                }}
+              />
+            </MenuItem>
+          ))}
+        </Menu>
 
         <ClaudeCapDialog
           open={claudeQuotaExhausted}
           plan={quota?.plan ?? 'free'}
-          cap={quota?.claudeDailyCap ?? 1}
+          cap={quota?.premiumDailyCap ?? 1}
           onClose={handleCapDialogClose}
           onUseFreeModel={handleUseFreeModel}
-          onUpgrade={handleClaudeUpgradeClick}
+          onUpgrade={handlePremiumUpgradeClick}
         />
+        <Snackbar
+          open={!!modelSwitchError}
+          anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+          onClose={() => setModelSwitchError(null)}
+          autoHideDuration={6000}
+        >
+          <Alert
+            severity="error"
+            variant="filled"
+            onClose={() => setModelSwitchError(null)}
+            sx={{ fontSize: '0.8rem', maxWidth: 480 }}
+          >
+            {modelSwitchError}
+          </Alert>
+        </Snackbar>
       </Box>
     </Box>
   );

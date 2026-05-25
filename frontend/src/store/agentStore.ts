@@ -6,7 +6,7 @@
  *  - Connection / processing flags
  *  - Panel state (right panel — single-artifact pattern)
  *  - Plan state
- *  - User info / error banners
+ *  - User info / health and quota banners
  *  - Edited scripts (approval flow)
  *
  * Per-session state:
@@ -45,6 +45,13 @@ export interface LLMHealthError {
   model: string;
 }
 
+
+export interface ToolBudgetBlockState {
+  reason?: string | null;
+  estimatedCostUsd?: number | null;
+  remainingCapUsd?: number | null;
+}
+
 export type ActivityStatus =
   | { type: 'idle' }
   | { type: 'thinking' }
@@ -52,6 +59,7 @@ export type ActivityStatus =
   | { type: 'waiting-approval' }
   | { type: 'streaming' }
   | { type: 'cancelled' };
+
 export interface ResearchAgentStats {
   toolCount: number;
   tokenCount: number;
@@ -107,7 +115,7 @@ interface AgentStore {
   user: User | null;
   error: string | null;
   llmHealthError: LLMHealthError | null;
-  /** Set when a Claude-send hits the daily quota — ChatInput opens the cap dialog in response. */
+  /** Set when a premium-model send hits the daily quota; ChatInput opens the cap dialog. */
   claudeQuotaExhausted: boolean;
 
   // Right panel (single-artifact pattern)
@@ -122,7 +130,8 @@ interface AgentStore {
   editedScripts: Record<string, string>;
 
   // Trackio dashboard config per tool call (tool_call_id -> {spaceId, project?})
-  // Set when the agent declares trackio_space_id; the UI embeds the live dashboard via an iframe.
+  // Set when the agent declares trackio_space_id;
+  // the UI uses it to embed the live dashboard via an iframe.
   trackioDashboards: Record<string, { spaceId: string; project?: string }>;
 
   // Tool error states (tool_call_id -> true if errored) - persisted across renders
@@ -130,6 +139,9 @@ interface AgentStore {
 
   // Tool rejected states (tool_call_id -> true if rejected by user) - persisted across renders
   rejectedTools: Record<string, boolean>;
+
+  // Tool budget-block metadata (tool_call_id -> display metadata) - transient UI state
+  budgetBlocks: Record<string, ToolBudgetBlockState>;
 
   // ── Per-session actions ─────────────────────────────────────────────
 
@@ -153,7 +165,6 @@ interface AgentStore {
   setError: (error: string | null) => void;
   setLlmHealthError: (error: LLMHealthError | null) => void;
   setClaudeQuotaExhausted: (exhausted: boolean) => void;
-
   setPanel: (data: PanelData, view?: PanelView, editable?: boolean) => void;
   setPanelView: (view: PanelView) => void;
   setPanelOutput: (output: PanelSection) => void;
@@ -167,6 +178,7 @@ interface AgentStore {
   getEditedScript: (toolCallId: string) => string | undefined;
   clearEditedScripts: () => void;
 
+
   setTrackioDashboard: (toolCallId: string, spaceId: string, project?: string) => void;
   getTrackioDashboard: (toolCallId: string) => { spaceId: string; project?: string } | undefined;
 
@@ -175,6 +187,9 @@ interface AgentStore {
 
   setToolRejected: (toolCallId: string, isRejected: boolean) => void;
   getToolRejected: (toolCallId: string) => boolean | undefined;
+
+  setToolBudgetBlock: (toolCallId: string, block: ToolBudgetBlockState | null) => void;
+  getToolBudgetBlock: (toolCallId: string) => ToolBudgetBlockState | undefined;
 }
 
 /**
@@ -265,7 +280,6 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   error: null,
   llmHealthError: null,
   claudeQuotaExhausted: false,
-
   panelData: null,
   panelView: 'script',
   panelEditable: false,
@@ -273,9 +287,12 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   plan: [],
 
   editedScripts: {},
+  jobUrls: {},
+  jobStatuses: {},
   trackioDashboards: loadTrackioDashboards(),
   toolErrors: loadToolErrors(),
   rejectedTools: loadRejectedTools(),
+  budgetBlocks: {},
 
   // ── Per-session state management ──────────────────────────────────
 
@@ -298,7 +315,7 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
     // (plus activityStatus when the processing→idle side-effect fires).
     // This prevents overwriting flat fields changed by global setters
     // (e.g. setPanelView called from CodePanel) with stale snapshot values.
-    let flatMirror: Record<string, unknown> = {};
+    const flatMirror: Record<string, unknown> = {};
     if (isActive) {
       for (const key of Object.keys(updates)) {
         flatMirror[key] = updated[key as keyof PerSessionState];
@@ -351,14 +368,13 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
       panelView: incoming.panelView,
       panelEditable: incoming.panelEditable,
       plan: incoming.plan,
-      // Clear transient error on switch
-      error: null,
     });
   },
 
   clearSessionState: (sessionId) => {
     set((state) => {
-      const { [sessionId]: _, ...rest } = state.sessionStates;
+      const rest = { ...state.sessionStates };
+      delete rest[sessionId];
       return { sessionStates: rest };
     });
   },
@@ -376,7 +392,6 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   setError: (error) => set({ error }),
   setLlmHealthError: (error) => set({ llmHealthError: error }),
   setClaudeQuotaExhausted: (exhausted) => set({ claudeQuotaExhausted: exhausted }),
-
   // ── Panel (single-artifact) ───────────────────────────────────────
   // Each setter also patches the active session's snapshot so that
   // getSessionState() stays consistent with flat state.
@@ -441,6 +456,9 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
 
   clearEditedScripts: () => set({ editedScripts: {} }),
 
+  // ── Job URLs ────────────────────────────────────────────────────────
+
+
   // ── Trackio Dashboards ──────────────────────────────────────────────
 
   setTrackioDashboard: (toolCallId, spaceId, project) => {
@@ -465,7 +483,12 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
 
   setToolError: (toolCallId, hasError) => {
     set((state) => {
-      const updated = { ...state.toolErrors, [toolCallId]: hasError };
+      const updated = { ...state.toolErrors };
+      if (hasError) {
+        updated[toolCallId] = true;
+      } else {
+        delete updated[toolCallId];
+      }
       saveToolErrors(updated);
       return { toolErrors: updated };
     });
@@ -484,4 +507,24 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   },
 
   getToolRejected: (toolCallId) => get().rejectedTools[toolCallId],
+
+  // ── Tool Budget Blocks ───────────────────────────────────────────────
+
+  setToolBudgetBlock: (toolCallId, block) => {
+    set((state) => {
+      if (!block) {
+        const next = { ...state.budgetBlocks };
+        delete next[toolCallId];
+        return { budgetBlocks: next };
+      }
+      return {
+        budgetBlocks: {
+          ...state.budgetBlocks,
+          [toolCallId]: block,
+        },
+      };
+    });
+  },
+
+  getToolBudgetBlock: (toolCallId) => get().budgetBlocks[toolCallId],
 }));
