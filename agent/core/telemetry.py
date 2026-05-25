@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 # ── usage extraction ────────────────────────────────────────────────────────
 
+
 def extract_usage(response_or_chunk: Any) -> dict:
     """Flat usage dict from a litellm response or final-chunk usage object.
 
@@ -70,6 +71,7 @@ def extract_usage(response_or_chunk: Any) -> dict:
 
 # ── llm_call ────────────────────────────────────────────────────────────────
 
+
 async def record_llm_call(
     session: Any,
     *,
@@ -77,35 +79,61 @@ async def record_llm_call(
     response: Any = None,
     latency_ms: int,
     finish_reason: str | None,
+    kind: str = "main",
 ) -> dict:
     """Emit an ``llm_call`` event and return the extracted usage dict so
-    callers can stash it on their result object if they want."""
+    callers can stash it on their result object if they want.
+
+    ``kind`` tags the call site so downstream analytics can break spend
+    down by category. Values currently emitted by the codebase:
+
+    * ``main``        — agent loop turn (user-facing reply or tool follow-up)
+    * ``research``    — research sub-agent inner loop (3 call sites)
+    * ``compaction``  — context-window summary on overflow
+    * ``effort_probe``— effort cascade walk on rejection / model switch
+    * ``restore``     — session re-seed summary after a Space restart
+
+    Pre-2026-04-29 only ``main`` calls were instrumented; observed gap on
+    Cost Explorer was ~67%, with the other 5 call sites accounting for
+    the rest. Tagging lets us split the dataset's ``total_cost_usd`` by
+    category and validate against AWS billing.
+
+    The ``/title`` (HF Router, not Bedrock) and ``/health/llm`` (diagnostic
+    endpoint, no session context) call sites are intentionally not
+    instrumented — together they're <1% of spend.
+    """
     usage = extract_usage(response) if response is not None else {}
     cost_usd = 0.0
     if response is not None:
         try:
             from litellm import completion_cost
+
             cost_usd = float(completion_cost(completion_response=response) or 0.0)
         except Exception:
             cost_usd = 0.0
     from agent.core.session import Event  # local import to avoid cycle
+
     try:
-        await session.send_event(Event(
-            event_type="llm_call",
-            data={
-                "model": model,
-                "latency_ms": latency_ms,
-                "finish_reason": finish_reason,
-                "cost_usd": cost_usd,
-                **usage,
-            },
-        ))
+        await session.send_event(
+            Event(
+                event_type="llm_call",
+                data={
+                    "model": model,
+                    "latency_ms": latency_ms,
+                    "finish_reason": finish_reason,
+                    "cost_usd": cost_usd,
+                    "kind": kind,
+                    **usage,
+                },
+            )
+        )
     except Exception as e:
         logger.debug("record_llm_call failed (non-fatal): %s", e)
     return usage
 
 
 # ── sandbox ─────────────────────────────────────────────────────────────────
+
 
 async def record_sandbox_create(
     session: Any,
@@ -115,38 +143,45 @@ async def record_sandbox_create(
     create_latency_s: int,
 ) -> None:
     from agent.core.session import Event
+
     try:
         # Pin created-at on the session so record_sandbox_destroy can diff.
         session._sandbox_created_at = time.monotonic() - create_latency_s
-        await session.send_event(Event(
-            event_type="sandbox_create",
-            data={
-                "sandbox_id": getattr(sandbox, "space_id", None),
-                "hardware": hardware,
-                "create_latency_s": int(create_latency_s),
-            },
-        ))
+        await session.send_event(
+            Event(
+                event_type="sandbox_create",
+                data={
+                    "sandbox_id": getattr(sandbox, "space_id", None),
+                    "hardware": hardware,
+                    "create_latency_s": int(create_latency_s),
+                },
+            )
+        )
     except Exception as e:
         logger.debug("record_sandbox_create failed (non-fatal): %s", e)
 
 
 async def record_sandbox_destroy(session: Any, sandbox: Any) -> None:
     from agent.core.session import Event
+
     try:
         created = getattr(session, "_sandbox_created_at", None)
         lifetime_s = int(time.monotonic() - created) if created else None
-        await session.send_event(Event(
-            event_type="sandbox_destroy",
-            data={
-                "sandbox_id": getattr(sandbox, "space_id", None),
-                "lifetime_s": lifetime_s,
-            },
-        ))
+        await session.send_event(
+            Event(
+                event_type="sandbox_destroy",
+                data={
+                    "sandbox_id": getattr(sandbox, "space_id", None),
+                    "lifetime_s": lifetime_s,
+                },
+            )
+        )
     except Exception as e:
         logger.debug("record_sandbox_destroy failed (non-fatal): %s", e)
 
 
 # ── feedback ───────────────────────────────────────────────────────────────
+
 
 async def record_feedback(
     session: Any,
@@ -157,16 +192,19 @@ async def record_feedback(
     comment: str | None = None,
 ) -> None:
     from agent.core.session import Event
+
     try:
-        await session.send_event(Event(
-            event_type="feedback",
-            data={
-                "rating": rating,
-                "turn_index": turn_index,
-                "message_id": message_id,
-                "comment": (comment or "")[:500],
-            },
-        ))
+        await session.send_event(
+            Event(
+                event_type="feedback",
+                data={
+                    "rating": rating,
+                    "turn_index": turn_index,
+                    "message_id": message_id,
+                    "comment": (comment or "")[:500],
+                },
+            )
+        )
     except Exception as e:
         logger.debug("record_feedback failed (non-fatal): %s", e)
 
@@ -178,11 +216,14 @@ async def record_pro_cta_click(
     target: str = "pro_pricing",
 ) -> None:
     from agent.core.session import Event
+
     try:
-        await session.send_event(Event(
-            event_type="pro_cta_click",
-            data={"source": source, "target": target},
-        ))
+        await session.send_event(
+            Event(
+                event_type="pro_cta_click",
+                data={"source": source, "target": target},
+            )
+        )
     except Exception as e:
         logger.debug("record_pro_cta_click failed (non-fatal): %s", e)
 
@@ -197,11 +238,14 @@ async def record_pro_conversion(
     ``MongoSessionStore.mark_pro_seen``; fired into the user's first Pro
     session so the rollup picks it up alongside other event-driven KPIs."""
     from agent.core.session import Event
+
     try:
-        await session.send_event(Event(
-            event_type="pro_conversion",
-            data={"first_seen_at": first_seen_at},
-        ))
+        await session.send_event(
+            Event(
+                event_type="pro_conversion",
+                data={"first_seen_at": first_seen_at},
+            )
+        )
     except Exception as e:
         logger.debug("record_pro_conversion failed (non-fatal): %s", e)
 

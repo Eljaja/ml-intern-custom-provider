@@ -153,6 +153,7 @@ def test_task_research_only():
     events = [
         _ev("tool_call", {"tool": "research"}),
         _ev("tool_call", {"tool": "explore_hf_docs"}),
+        _ev("tool_call", {"tool": "archive_search", "arguments": {"query": "ml"}}),
     ]
     assert "task:research_only" in tag_session(_traj(events))
 

@@ -2,22 +2,22 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Literal, Union
 
 from dotenv import load_dotenv
-
-from agent.messaging.models import MessagingConfig
-from agent.project_root import find_project_root
-
-_PROJECT_ROOT = find_project_root()
 from fastmcp.mcp_config import (
     RemoteMCPServer,
     StdioMCPServer,
 )
 from pydantic import BaseModel
 
+from agent.messaging.models import MessagingConfig
+from agent.project_root import find_project_root
+
 # These two are the canonical server config types for MCP servers.
 MCPServerConfig = Union[StdioMCPServer, RemoteMCPServer]
+
+_PROJECT_ROOT = find_project_root()
 
 
 class Config(BaseModel):
@@ -27,6 +27,13 @@ class Config(BaseModel):
     mcpServers: dict[str, MCPServerConfig] = {}
     save_sessions: bool = True
     session_dataset_repo: str = "smolagents/ml-intern-sessions"
+    # Per-user private dataset that mirrors each session in Claude Code JSONL
+    # format so the HF Agent Trace Viewer auto-renders it
+    # (https://huggingface.co/changelog/agent-trace-viewer). Created private
+    # on first use; user flips it public via /share-traces. ``{hf_user}`` is
+    # substituted at upload time from the authenticated HF username.
+    share_traces: bool = True
+    personal_trace_repo_template: str = "{hf_user}/ml-intern-sessions"
     auto_save_interval: int = 1  # Save every N user turns (0 = disabled)
     # Mid-turn heartbeat: save + upload every N seconds while events are being
     # emitted. Guards against losing trace data on long-running turns that
@@ -38,6 +45,7 @@ class Config(BaseModel):
 
     # Permission control parameters
     auto_file_upload: bool = False
+    tool_runtime: Literal["local", "sandbox"] = "local"
 
     # Reasoning effort *preference* — the ceiling the user wants. The probe
     # on `/model` walks a cascade down from here (``max`` → ``xhigh`` → ``high``
@@ -52,12 +60,16 @@ class Config(BaseModel):
 
 
 USER_CONFIG_ENV_VAR = "ML_INTERN_CLI_CONFIG"
-DEFAULT_USER_CONFIG_PATH = Path.home() / ".config" / "ml-intern" / "cli_agent_config.json"
+DEFAULT_USER_CONFIG_PATH = (
+    Path.home() / ".config" / "ml-intern" / "cli_agent_config.json"
+)
 SLACK_DEFAULT_DESTINATION = "slack.default"
 SLACK_DEFAULT_AUTO_EVENT_TYPES = ["approval_required", "error", "turn_complete"]
 
 
-def _deep_merge_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+def _deep_merge_config(
+    base: dict[str, Any], override: dict[str, Any]
+) -> dict[str, Any]:
     merged = dict(base)
     for key, value in override.items():
         current = merged.get(key)

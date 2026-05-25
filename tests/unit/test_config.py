@@ -1,5 +1,8 @@
 import json
 
+import pytest
+from pydantic import ValidationError
+
 from agent import config as config_module
 
 
@@ -7,7 +10,9 @@ def _write_json(path, data):
     path.write_text(json.dumps(data), encoding="utf-8")
 
 
-def test_load_config_does_not_apply_slack_user_defaults_by_default(tmp_path, monkeypatch):
+def test_load_config_does_not_apply_slack_user_defaults_by_default(
+    tmp_path, monkeypatch
+):
     config_path = tmp_path / "config.json"
     _write_json(
         config_path,
@@ -119,3 +124,35 @@ def test_slack_user_defaults_can_be_disabled(tmp_path, monkeypatch):
 
     assert not config.messaging.enabled
     assert config.messaging.destinations == {}
+
+
+def test_tool_runtime_defaults_to_local(tmp_path):
+    config_path = tmp_path / "config.json"
+    _write_json(config_path, {"model_name": "moonshotai/Kimi-K2.6"})
+
+    config = config_module.load_config(str(config_path))
+
+    assert config.tool_runtime == "local"
+
+
+def test_user_config_can_set_sandbox_tool_runtime(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    user_config_path = tmp_path / "user-config.json"
+    _write_json(config_path, {"model_name": "moonshotai/Kimi-K2.6"})
+    _write_json(user_config_path, {"tool_runtime": "sandbox"})
+    monkeypatch.setenv("ML_INTERN_CLI_CONFIG", str(user_config_path))
+
+    config = config_module.load_config(str(config_path), include_user_defaults=True)
+
+    assert config.tool_runtime == "sandbox"
+
+
+def test_invalid_tool_runtime_is_rejected(tmp_path):
+    config_path = tmp_path / "config.json"
+    _write_json(
+        config_path,
+        {"model_name": "moonshotai/Kimi-K2.6", "tool_runtime": "hybrid"},
+    )
+
+    with pytest.raises(ValidationError):
+        config_module.load_config(str(config_path))

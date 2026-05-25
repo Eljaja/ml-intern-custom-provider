@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import subprocess
 import sys
 import uuid
@@ -9,6 +10,8 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
+
+from litellm import Message
 
 from agent.config import Config
 from agent.context_manager.manager import ContextManager
@@ -19,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_TOKENS = 200_000
 _TURN_COMPLETE_NOTIFICATION_CHARS = 39000
+
+DEFAULT_SESSION_LOG_DIR = Path("session_logs")
 
 
 def _get_max_tokens_safe(model_name: str) -> int:
@@ -47,7 +52,8 @@ def _get_max_tokens_safe(model_name: str) -> int:
             continue
     logger.info(
         "No litellm.get_model_info entry for %s, falling back to %d",
-        model_name, _DEFAULT_MAX_TOKENS,
+        model_name,
+        _DEFAULT_MAX_TOKENS,
     )
     return _DEFAULT_MAX_TOKENS
 
@@ -58,6 +64,8 @@ class OpType(Enum):
     INTERRUPT = "interrupt"
     UNDO = "undo"
     COMPACT = "compact"
+    NEW = "new"
+    RESUME = "resume"
     SHUTDOWN = "shutdown"
 
 
@@ -88,10 +96,13 @@ class Session:
         defer_turn_complete_notification: bool = False,
         session_id: str | None = None,
         user_id: str | None = None,
+        hf_username: str | None = None,
         persistence_store: Any | None = None,
     ):
         self.hf_token: Optional[str] = hf_token
         self.user_id: Optional[str] = user_id
+        self.hf_username: Optional[str] = hf_username
+        self.local_mode = local_mode
         self.persistence_store = persistence_store
         self.tool_router = tool_router
         self.stream = stream
@@ -110,12 +121,16 @@ class Session:
         self.session_id = session_id or str(uuid.uuid4())
         self.config = config
         self.is_running = True
+        self.current_plan: list[dict[str, str]] = []
         self._cancelled = asyncio.Event()
         self.pending_approval: Optional[dict[str, Any]] = None
         self.sandbox = None
         self.notification_gateway = notification_gateway
         self.notification_destinations = list(notification_destinations or [])
         self.defer_turn_complete_notification = defer_turn_complete_notification
+        self.auto_approval_enabled: bool = False
+        self.auto_approval_cost_cap_usd: float | None = None
+        self.auto_approval_estimated_spend_usd: float = 0.0
 
         # Session trajectory logging
         self.logged_events: list[dict] = []
@@ -266,8 +281,7 @@ class Session:
             if summary:
                 summary = summary[:_TURN_COMPLETE_NOTIFICATION_CHARS]
                 message = (
-                    f"Session {self.session_id} completed successfully.\n"
-                    f"{summary}"
+                    f"Session {self.session_id} completed successfully.\n{summary}"
                 )
             else:
                 message = f"Session {self.session_id} completed successfully."
@@ -309,6 +323,40 @@ class Session:
         self.config.model_name = model_name
         self.context_manager.model_max_tokens = _get_max_tokens_safe(model_name)
 
+    def set_auto_approval_policy(
+        self, *, enabled: bool, cost_cap_usd: float | None
+    ) -> None:
+        self.auto_approval_enabled = bool(enabled)
+        self.auto_approval_cost_cap_usd = cost_cap_usd
+
+    def add_auto_approval_estimated_spend(self, amount_usd: float | None) -> None:
+        if amount_usd is None or amount_usd <= 0:
+            return
+        self.auto_approval_estimated_spend_usd = round(
+            self.auto_approval_estimated_spend_usd + float(amount_usd), 4
+        )
+
+    @property
+    def auto_approval_remaining_usd(self) -> float | None:
+        if self.auto_approval_cost_cap_usd is None:
+            return None
+        return round(
+            max(
+                0.0,
+                self.auto_approval_cost_cap_usd
+                - self.auto_approval_estimated_spend_usd,
+            ),
+            4,
+        )
+
+    def auto_approval_policy_summary(self) -> dict[str, Any]:
+        return {
+            "enabled": self.auto_approval_enabled,
+            "cost_cap_usd": self.auto_approval_cost_cap_usd,
+            "estimated_spend_usd": round(self.auto_approval_estimated_spend_usd, 4),
+            "remaining_usd": self.auto_approval_remaining_usd,
+        }
+
     def effective_effort_for(self, model_name: str) -> str | None:
         """Resolve the effort level to actually send for ``model_name``.
 
@@ -325,6 +373,82 @@ class Session:
     def increment_turn(self) -> None:
         """Increment turn counter (called after each user interaction)"""
         self.turn_count += 1
+
+    def start_new_conversation(self) -> dict[str, Any]:
+        """Rotate this runtime into a fresh conversation.
+
+        The tool router, model/config choices, user identity, and external
+        resources stay attached to the CLI process. Conversation-specific state
+        gets reset so later saves do not merge with the prior chat. Warm runtime
+        resources such as the sandbox, in-flight job tracking, and probed
+        model-effort cache are deliberately preserved.
+        """
+        previous_session_id = self.session_id
+        previous_turn_count = self.turn_count
+        previous_message_count = len(self.context_manager.items)
+        previous_non_system_count = sum(
+            1
+            for item in self.context_manager.items
+            if getattr(item, "role", None) != "system"
+        )
+
+        saved_path: str | None = None
+        if self.config.save_sessions and previous_non_system_count:
+            saved_path = self.save_and_upload_detached(self.config.session_dataset_repo)
+
+        from agent.tools.plan_tool import reset_current_plan
+
+        self.current_plan = []
+        reset_current_plan()
+
+        system_msg = self._fresh_system_message()
+        self.context_manager.items = [system_msg] if system_msg is not None else []
+        self.context_manager.running_context_usage = 0
+
+        self.session_id = str(uuid.uuid4())
+        self.session_start_time = datetime.now().isoformat()
+        self.turn_count = 0
+        self.last_auto_save_turn = 0
+        self.logged_events = []
+        self._local_save_path = None
+        self._last_heartbeat_ts = None
+        self.pending_approval = None
+        self.auto_approval_estimated_spend_usd = 0.0
+        self.reset_cancel()
+
+        # Previous-session metadata is intentionally included for event
+        # consumers and telemetry, even though the CLI currently prints only
+        # the optional save path.
+        return {
+            "session_id": self.session_id,
+            "previous_session_id": previous_session_id,
+            "previous_turn_count": previous_turn_count,
+            "previous_message_count": previous_message_count,
+            "saved_path": saved_path,
+        }
+
+    def _fresh_system_message(self) -> Message | None:
+        existing = (
+            self.context_manager.items[0]
+            if self.context_manager.items
+            and getattr(self.context_manager.items[0], "role", None) == "system"
+            else None
+        )
+        refresh = getattr(self.context_manager, "refresh_system_prompt", None)
+        if refresh is None:
+            return existing
+        try:
+            tool_specs = (
+                self.tool_router.get_tool_specs_for_llm() if self.tool_router else []
+            )
+            return refresh(
+                tool_specs=tool_specs,
+                hf_token=self.hf_token,
+                local_mode=self.local_mode,
+            )
+        except Exception as e:
+            logger.warning("Failed to refresh system prompt for new chat: %s", e)
+            return existing
 
     async def auto_save_if_needed(self) -> None:
         """Check if auto-save should trigger and save if so (completely non-blocking)"""
@@ -361,6 +485,7 @@ class Session:
         return {
             "session_id": self.session_id,
             "user_id": self.user_id,
+            "hf_username": self.hf_username,
             "session_start_time": self.session_start_time,
             "session_end_time": datetime.now().isoformat(),
             "model_name": self.config.model_name,
@@ -372,7 +497,7 @@ class Session:
 
     def save_trajectory_local(
         self,
-        directory: str = "session_logs",
+        directory: str = str(DEFAULT_SESSION_LOG_DIR),
         upload_status: str = "pending",
         dataset_url: Optional[str] = None,
     ) -> Optional[str]:
@@ -398,6 +523,7 @@ class Session:
             # snapshot between heartbeats would otherwise leak them.
             try:
                 from agent.core.redact import scrub
+
                 for key in ("messages", "events", "tools"):
                     if key in trajectory:
                         trajectory[key] = scrub(trajectory[key])
@@ -455,62 +581,174 @@ class Session:
             logger.error(f"Failed to update local save status: {e}")
             return False
 
-    def save_and_upload_detached(self, repo_id: str) -> Optional[str]:
-        """
-        Save session locally and spawn detached subprocess for upload (fire-and-forget)
+    def _personal_trace_repo_id(self) -> Optional[str]:
+        """Resolve the per-user trace repo id from config + HF username.
 
-        Args:
-            repo_id: HuggingFace dataset repo ID
-
-        Returns:
-            Path to local save file
+        Returns ``None`` when sharing is disabled, the user is anonymous,
+        or the template is missing — caller skips the personal upload in
+        those cases.
         """
-        # Save locally first (fast, synchronous)
-        local_path = self.save_trajectory_local(upload_status="pending")
-        if not local_path:
+        if not getattr(self.config, "share_traces", False):
+            return None
+        hf_user = self.hf_username or self.user_id
+        if not hf_user:
+            return None
+        template = getattr(self.config, "personal_trace_repo_template", None)
+        if not template:
+            return None
+        try:
+            return template.format(hf_user=hf_user)
+        except (KeyError, IndexError):
+            logger.debug("personal_trace_repo_template format failed: %r", template)
             return None
 
-        # Spawn detached subprocess for upload (fire-and-forget)
+    def _spawn_uploader(
+        self,
+        action: str,
+        target: str,
+        repo_id: str,
+        *,
+        format: str,
+        token_env: Optional[str],
+        private: bool,
+        token_value: Optional[str] = None,
+    ) -> None:
+        """Fire-and-forget spawn of ``session_uploader.py`` with the given args."""
         try:
             uploader_script = Path(__file__).parent / "session_uploader.py"
+            cmd = [
+                sys.executable,
+                str(uploader_script),
+                action,
+                target,
+                repo_id,
+                "--format",
+                format,
+                "--private",
+                "true" if private else "false",
+            ]
+            if token_env:
+                cmd.extend(["--token-env", token_env])
 
-            # Use Popen with detached process
+            env = os.environ.copy()
+            if token_value:
+                env["_ML_INTERN_PERSONAL_TOKEN"] = token_value
+
             subprocess.Popen(
-                [sys.executable, str(uploader_script), "upload", local_path, repo_id],
+                cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=env,
                 start_new_session=True,  # Detach from parent
             )
         except Exception as e:
             logger.warning(f"Failed to spawn upload subprocess: {e}")
 
+    def save_and_upload_detached(self, repo_id: str) -> Optional[str]:
+        """
+        Save session locally and spawn detached subprocess(es) for upload
+        (fire-and-forget).
+
+        Always uploads to the shared org dataset (``repo_id``) in the
+        single-row format used by the KPI scheduler. When
+        ``config.share_traces`` is enabled and a username is known, also
+        uploads to the user's personal private dataset in Claude Code JSONL
+        format so the HF Agent Trace Viewer auto-renders it.
+
+        Args:
+            repo_id: HuggingFace dataset repo ID for the org/KPI upload.
+
+        Returns:
+            Path to local save file
+        """
+        local_path = self.save_trajectory_local(upload_status="pending")
+        if not local_path:
+            return None
+
+        self._spawn_uploader(
+            "upload",
+            local_path,
+            repo_id,
+            format="row",
+            token_env=None,  # default org token chain
+            private=False,
+        )
+
+        personal_repo = self._personal_trace_repo_id()
+        if personal_repo:
+            # User's own HF_TOKEN write-scoped to their namespace.
+            self._spawn_uploader(
+                "upload",
+                local_path,
+                personal_repo,
+                format="claude_code",
+                token_env="HF_TOKEN",
+                token_value=self.hf_token,
+                private=True,
+            )
+
         return local_path
 
     @staticmethod
     def retry_failed_uploads_detached(
-        directory: str = "session_logs", repo_id: Optional[str] = None
+        directory: str = str(DEFAULT_SESSION_LOG_DIR),
+        repo_id: Optional[str] = None,
+        *,
+        personal_repo_id: Optional[str] = None,
     ) -> None:
         """
-        Spawn detached subprocess to retry failed/pending uploads (fire-and-forget)
+        Spawn detached subprocess(es) to retry failed/pending uploads
+        (fire-and-forget).
 
         Args:
             directory: Directory containing session logs
-            repo_id: Target dataset repo ID
+            repo_id: Target dataset repo ID for the shared org/KPI upload.
+            personal_repo_id: Per-user dataset for Claude-Code-format
+                retries. ``None`` skips the personal retry pass.
         """
-        if not repo_id:
+        if not repo_id and not personal_repo_id:
             return
 
         try:
             uploader_script = Path(__file__).parent / "session_uploader.py"
 
-            # Spawn detached subprocess for retry
-            subprocess.Popen(
-                [sys.executable, str(uploader_script), "retry", directory, repo_id],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,  # Detach from parent
-            )
+            if repo_id:
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(uploader_script),
+                        "retry",
+                        directory,
+                        repo_id,
+                        "--format",
+                        "row",
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+
+            if personal_repo_id:
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(uploader_script),
+                        "retry",
+                        directory,
+                        personal_repo_id,
+                        "--format",
+                        "claude_code",
+                        "--token-env",
+                        "HF_TOKEN",
+                        "--private",
+                        "true",
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
         except Exception as e:
             logger.warning(f"Failed to spawn retry subprocess: {e}")

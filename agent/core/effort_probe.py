@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
+from typing import Any
 
 from litellm import acompletion
 
@@ -41,12 +43,12 @@ logger = logging.getLogger(__name__)
 # requested level raise ``UnsupportedEffortError`` synchronously (no wasted
 # network round-trip) and we advance to the next level.
 _EFFORT_CASCADE: dict[str, list[str]] = {
-    "max":     ["max", "xhigh", "high", "medium", "low"],
-    "xhigh":   ["xhigh", "high", "medium", "low"],
-    "high":    ["high", "medium", "low"],
-    "medium":  ["medium", "low"],
+    "max": ["max", "xhigh", "high", "medium", "low"],
+    "xhigh": ["xhigh", "high", "medium", "low"],
+    "high": ["high", "medium", "low"],
+    "medium": ["medium", "low"],
     "minimal": ["minimal", "low"],
-    "low":     ["low"],
+    "low": ["low"],
 }
 
 _PROBE_TIMEOUT = 15.0
@@ -71,6 +73,7 @@ class ProbeOutcome:
     * str → send this level
     * None → model doesn't support thinking; strip it
     """
+
     effective_effort: str | None
     attempts: int
     elapsed_ms: int
@@ -110,10 +113,15 @@ def _is_invalid_effort(e: Exception) -> bool:
     return any(
         phrase in s
         for phrase in (
-            "invalid", "not supported", "must be one of", "not a valid",
-            "unrecognized", "unknown",
+            "invalid",
+            "not supported",
+            "must be one of",
+            "not a valid",
+            "unrecognized",
+            "unknown",
             # LiteLLM's own pre-flight validation phrasing.
-            "only supported by", "is only supported",
+            "only supported by",
+            "is only supported",
         )
     )
 
@@ -130,11 +138,23 @@ def _is_transient(e: Exception) -> bool:
     return any(
         p in s
         for p in (
-            "timeout", "timed out", "429", "rate limit",
-            "503", "service unavailable", "502", "bad gateway",
-            "500", "internal server error", "overloaded", "capacity",
-            "connection reset", "connection refused", "connection error",
-            "eof", "broken pipe",
+            "timeout",
+            "timed out",
+            "429",
+            "rate limit",
+            "503",
+            "service unavailable",
+            "502",
+            "bad gateway",
+            "500",
+            "internal server error",
+            "overloaded",
+            "capacity",
+            "connection reset",
+            "connection refused",
+            "connection error",
+            "eof",
+            "broken pipe",
         )
     )
 
@@ -143,6 +163,7 @@ async def probe_effort(
     model_name: str,
     preference: str | None,
     hf_token: str | None,
+    session: Any = None,
 ) -> ProbeOutcome:
     """Walk the cascade for ``preference`` on ``model_name``.
 
@@ -151,6 +172,12 @@ async def probe_effort(
     transient errors (5xx, timeout) — persistent 4xx that aren't thinking/
     effort related bubble as the original exception so callers can surface
     them (auth, model-not-found, quota, etc.).
+
+    ``session`` is optional; when provided, each successful probe attempt
+    is recorded via ``telemetry.record_llm_call(kind="effort_probe")`` so
+    the cost shows up in the session's ``total_cost_usd``. Failed probes
+    (rejected by the provider) typically aren't billed, so we only record
+    on success.
     """
     loop = asyncio.get_event_loop()
     start = loop.time()
@@ -168,7 +195,10 @@ async def probe_effort(
     for effort in cascade:
         try:
             params = _resolve_llm_params(
-                model_name, hf_token, reasoning_effort=effort, strict=True,
+                model_name,
+                hf_token,
+                reasoning_effort=effort,
+                strict=True,
             )
         except UnsupportedEffortError:
             # Provider can't even accept this effort name (e.g. "max" on
@@ -178,8 +208,9 @@ async def probe_effort(
 
         attempts += 1
         try:
+            _t0 = time.monotonic()
             async with use_custom_inference_openai_key_env(model_name, params):
-                await asyncio.wait_for(
+                response = await asyncio.wait_for(
                     acompletion(
                         messages=[{"role": "user", "content": "ping"}],
                         max_tokens=_PROBE_MAX_TOKENS,
@@ -188,6 +219,22 @@ async def probe_effort(
                     ),
                     timeout=_PROBE_TIMEOUT,
                 )
+            if session is not None:
+                try:
+                    from agent.core import telemetry
+
+                    await telemetry.record_llm_call(
+                        session,
+                        model=model_name,
+                        response=response,
+                        latency_ms=int((time.monotonic() - _t0) * 1000),
+                        finish_reason=response.choices[0].finish_reason
+                        if response.choices
+                        else None,
+                        kind="effort_probe",
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             last_error = e
             if _is_thinking_unsupported(e):
@@ -199,7 +246,9 @@ async def probe_effort(
                     note="model doesn't support reasoning, dropped",
                 )
             if _is_invalid_effort(e):
-                logger.debug("probe: %s rejected effort=%s, trying next", model_name, effort)
+                logger.debug(
+                    "probe: %s rejected effort=%s, trying next", model_name, effort
+                )
                 continue
             if _is_transient(e):
                 raise ProbeInconclusive(str(e)) from e
