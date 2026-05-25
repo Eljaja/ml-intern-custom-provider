@@ -160,6 +160,20 @@ class SessionManager:
             1 for s in self.sessions.values() if s.user_id == user_id and s.is_active
         )
 
+    def _resolve_notification_destinations(
+        self, stored: list[str] | None, *, restore: bool = False
+    ) -> list[str]:
+        """Pick session notification targets; match CLI default auto-destinations."""
+        messaging = getattr(self.config, "messaging", None)
+        defaults: list[str] = []
+        if messaging is not None:
+            defaults = messaging.default_auto_destinations()
+        if stored is None:
+            return defaults
+        if restore and not stored:
+            return defaults
+        return list(stored)
+
     def _create_session_sync(
         self,
         *,
@@ -201,7 +215,9 @@ class SessionManager:
             user_id=user_id,
             hf_username=hf_username,
             notification_gateway=self.messaging_gateway,
-            notification_destinations=notification_destinations or [],
+            notification_destinations=self._resolve_notification_destinations(
+                notification_destinations
+            ),
             session_id=session_id,
             persistence_store=self._store(),
         )
@@ -627,7 +643,10 @@ class SessionManager:
             hf_token=hf_token,
             model=model,
             event_queue=event_queue,
-            notification_destinations=meta.get("notification_destinations") or [],
+            notification_destinations=self._resolve_notification_destinations(
+                meta.get("notification_destinations"),
+                restore=True,
+            ),
         )
 
         restored_messages: list[Message] = []

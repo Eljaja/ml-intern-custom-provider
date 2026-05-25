@@ -2,7 +2,6 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -13,7 +12,6 @@ from agent.core.session import Event, Session
 from agent.messaging.gateway import NotificationGateway
 from agent.messaging.models import NotificationRequest, NotificationResult
 from agent.messaging.slack import SlackProvider, _format_slack_mrkdwn
-from agent.messaging.zulip import ZulipProvider
 from agent.tools.notify_tool import notify_handler
 from backend.session_manager import AgentSession, SessionManager
 
@@ -511,3 +509,32 @@ def test_session_manager_updates_notification_destinations_in_session_info():
 
     with pytest.raises(ValueError):
         manager.set_notification_destinations("sess-manager", ["slack.unknown"])
+
+
+def test_session_manager_defaults_notification_destinations_from_config():
+    config = Config.model_validate(
+        {
+            "model_name": "moonshotai/Kimi-K2.6",
+            "messaging": {
+                "enabled": True,
+                "destinations": {
+                    "zulip.ops": {
+                        "provider": "zulip",
+                        "site": "https://chat.example.com",
+                        "email": "bot@example.com",
+                        "api_key": "key",
+                        "stream": "ml-agent",
+                        "allow_auto_events": True,
+                    }
+                },
+            },
+        }
+    )
+    manager = SessionManager(
+        str(Path(__file__).resolve().parents[2] / "configs" / "cli_agent_config.json")
+    )
+    manager.config = config
+
+    assert manager._resolve_notification_destinations(None) == ["zulip.ops"]
+    assert manager._resolve_notification_destinations([], restore=True) == ["zulip.ops"]
+    assert manager._resolve_notification_destinations([]) == []
