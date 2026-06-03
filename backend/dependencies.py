@@ -184,20 +184,56 @@ async def _extract_user_from_token(token: str) -> dict[str, Any] | None:
     return user
 
 
+def _dev_user_dict(
+    *,
+    user_id: str,
+    username: str | None = None,
+    plan: str = "free",
+    token: str | None = None,
+) -> dict[str, Any]:
+    user = {
+        "user_id": user_id,
+        "username": username or user_id,
+        "authenticated": True,
+        "plan": plan,
+    }
+    if token:
+        user[INTERNAL_HF_TOKEN_KEY] = token
+    return user
+
+
 async def _dev_user_from_env() -> dict[str, Any]:
     """Use HF_TOKEN as the dev identity when available.
 
     Local dev often runs without OAuth, but session trace uploads still need a
     real HF namespace. Deriving the dev user from HF_TOKEN keeps local uploads
     pointed at the token owner's dataset instead of dev/ml-intern-sessions.
+
+    Docker Compose keeps a stable skills namespace on the named volume: once
+    ``.last-user-id`` exists, reuse it across restarts even when whoami is slow
+    or briefly unavailable after ``docker compose up``.
     """
     token = clean_hf_token(os.environ.get("HF_TOKEN", ""))
+    if user_skills.is_docker_deploy():
+        cached = user_skills.read_docker_user_id_cache()
+        if cached:
+            plan = await _fetch_user_plan(token) if token else str(DEV_USER["plan"])
+            return _dev_user_dict(
+                user_id=cached,
+                plan=plan,
+                token=token or None,
+            )
+
     if not token:
         return dict(DEV_USER)
 
+    plan = await _fetch_user_plan(token)
     whoami = await fetch_whoami_v2(token)
     if not isinstance(whoami, dict):
-        return dict(DEV_USER)
+        cached = user_skills.read_docker_user_id_cache()
+        if cached:
+            return _dev_user_dict(user_id=cached, plan=plan, token=token)
+        return _dev_user_dict(user_id="dev", plan=plan, token=token)
 
     username = None
     for key in ("name", "user", "preferred_username"):
@@ -208,23 +244,12 @@ async def _dev_user_from_env() -> dict[str, Any]:
     if not username:
         cached = user_skills.read_docker_user_id_cache()
         if cached:
-            return {
-                "user_id": cached,
-                "username": cached,
-                "authenticated": True,
-                "plan": await _fetch_user_plan(token),
-                INTERNAL_HF_TOKEN_KEY: token,
-            }
-        return dict(DEV_USER)
+            return _dev_user_dict(user_id=cached, plan=plan, token=token)
+        return _dev_user_dict(user_id="dev", plan=plan, token=token)
 
-    user_skills.write_docker_user_id_cache(username)
-    return {
-        "user_id": username,
-        "username": username,
-        "authenticated": True,
-        "plan": await _fetch_user_plan(token),
-        INTERNAL_HF_TOKEN_KEY: token,
-    }
+    if user_skills.is_docker_deploy():
+        user_skills.write_docker_user_id_cache(username)
+    return _dev_user_dict(user_id=username, plan=plan, token=token)
 
 
 async def check_org_membership(token: str, org_name: str) -> bool:
