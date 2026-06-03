@@ -10,20 +10,24 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+_PROJECT_ENV = Path(__file__).parent.parent / ".env"
+
+
+def _dotenv_should_override() -> bool:
+    """Keep Docker Compose env vars; locally, .env overrides the shell."""
+    if os.environ.get("ML_INTERN_DOCKER", "").lower() in ("1", "true", "yes", "on"):
+        return False
+    return not Path("/.dockerenv").is_file()
+
+
 # Load .env before importing routes/session_manager so persistence and quota
 # modules see local Mongo settings during startup.
-load_dotenv(Path(__file__).parent.parent / ".env")
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from routes.agent import router as agent_router  # noqa: E402
-from routes.auth import router as auth_router  # noqa: E402
-
-# Load project-local .env first and let it override inherited process env.
-load_dotenv(Path(__file__).parent.parent / ".env", override=True)
+load_dotenv(_PROJECT_ENV, override=_dotenv_should_override())
 load_dotenv(Path.cwd() / ".env", override=False)
 load_dotenv(override=False)
+
+from routes.agent import router as agent_router  # noqa: E402
+from routes.auth import router as auth_router  # noqa: E402
 from session_manager import session_manager  # noqa: E402
 
 # Configure logging
@@ -87,6 +91,7 @@ app = FastAPI(
     redoc_url=None if _DOCS_DISABLED else "/redoc",
     openapi_url=None if _DOCS_DISABLED else "/openapi.json",
 )
+
 
 def _cors_allowed_origins() -> list[str]:
     """Default dev origins; extend with CORS_ORIGINS= comma-separated (Docker, reverse proxy)."""

@@ -16,6 +16,7 @@ from fastapi import HTTPException, Request, status
 
 from agent.core.hf_tokens import bearer_token_from_header, clean_hf_token
 
+from agent.core import skills as user_skills
 from agent.core.hf_access import fetch_whoami_v2
 
 logger = logging.getLogger(__name__)
@@ -205,8 +206,18 @@ async def _dev_user_from_env() -> dict[str, Any]:
             username = value
             break
     if not username:
+        cached = user_skills.read_docker_user_id_cache()
+        if cached:
+            return {
+                "user_id": cached,
+                "username": cached,
+                "authenticated": True,
+                "plan": await _fetch_user_plan(token),
+                INTERNAL_HF_TOKEN_KEY: token,
+            }
         return dict(DEV_USER)
 
+    user_skills.write_docker_user_id_cache(username)
     return {
         "user_id": username,
         "username": username,

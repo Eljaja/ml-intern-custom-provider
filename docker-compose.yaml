@@ -38,6 +38,7 @@ services:
       MONGODB_URI: mongodb://mongo:27017
       MONGODB_DB: ml-intern
       # Filesystem paths on the named volume below.
+      ML_INTERN_DOCKER: "1"
       ML_INTERN_SKILLS_DIR: /data/ml-intern/skills
       ML_INTERN_WORKSPACE: /app/backend/workspace
       # Run bash/read/write on the persistent workspace (trusted local Docker only).
