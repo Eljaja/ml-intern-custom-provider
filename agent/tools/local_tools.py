@@ -37,6 +37,23 @@ def _resolve_path(path: str) -> str:
         return path
 
 
+def _agent_workspace() -> Path | None:
+    configured = os.environ.get("ML_INTERN_WORKSPACE", "").strip()
+    if not configured:
+        return None
+    path = Path(configured).expanduser()
+    path.mkdir(parents=True, exist_ok=True)
+    return path.resolve()
+
+
+def _resolve_agent_path(path: str) -> Path:
+    raw = Path(path)
+    if raw.is_absolute():
+        return raw.resolve()
+    base = _agent_workspace()
+    return (base / raw).resolve() if base is not None else raw.resolve()
+
+
 def _atomic_write(path: Path, content: str) -> None:
     """Write file atomically via temp file + os.replace().
 
@@ -107,7 +124,9 @@ async def _bash_handler(
     if not command:
         return "No command provided.", False
     command = wrap_shell_command_with_hub_artifact_bootstrap(command, session)
-    work_dir = args.get("work_dir", ".")
+    work_dir = args.get("work_dir") or (
+        str(_agent_workspace()) if _agent_workspace() is not None else "."
+    )
     timeout = min(args.get("timeout") or DEFAULT_TIMEOUT, MAX_TIMEOUT)
     try:
         result = subprocess.run(
@@ -140,7 +159,7 @@ async def _read_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
     file_path = args.get("path", "")
     if not file_path:
         return "No path provided.", False
-    p = Path(file_path)
+    p = _resolve_agent_path(file_path)
     if not p.exists():
         return f"File not found: {file_path}", False
     if p.is_dir():
@@ -150,7 +169,7 @@ async def _read_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
     except Exception as e:
         return f"read error: {e}", False
 
-    _files_read.add(_resolve_path(file_path))
+    _files_read.add(_resolve_path(str(p)))
 
     lines = raw_content.splitlines()
     offset = max((args.get("offset") or 1), 1)
@@ -171,15 +190,15 @@ async def _write_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
     content = args.get("content", "")
     if not file_path:
         return "No path provided.", False
-    p = Path(file_path)
-    if p.exists() and _resolve_path(file_path) not in _files_read:
+    p = _resolve_agent_path(file_path)
+    if p.exists() and _resolve_path(str(p)) not in _files_read:
         return (
             f"You must read {file_path} before overwriting it. "
             f"Use the read tool first to see current contents."
         ), False
     try:
         _atomic_write(p, content)
-        _files_read.add(_resolve_path(file_path))
+        _files_read.add(_resolve_path(str(p)))
         msg = f"Wrote {len(content)} bytes to {file_path}"
         # Syntax validation for Python files
         if p.suffix == ".py":
@@ -209,10 +228,10 @@ async def _edit_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
     if old_str == new_str:
         return "old_str and new_str must differ.", False
 
-    p = Path(file_path)
+    p = _resolve_agent_path(file_path)
     if not p.exists():
         return f"File not found: {file_path}", False
-    if _resolve_path(file_path) not in _files_read:
+    if _resolve_path(str(p)) not in _files_read:
         return (
             f"You must read {file_path} before editing it. "
             f"Use the read tool first to see current contents."
