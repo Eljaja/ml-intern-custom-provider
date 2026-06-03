@@ -35,6 +35,9 @@ from models import (
     DatasetUploadResponse,
     HealthResponse,
     LLMHealthResponse,
+    SkillDetail,
+    SkillSummary,
+    SkillToggleRequest,
     SessionInfo,
     SessionNotificationsRequest,
     SessionResponse,
@@ -52,7 +55,11 @@ from session_manager import (
 import user_quotas
 
 from agent.core.hf_tokens import resolve_hf_request_token, resolve_hf_router_token
-from agent.core.llm_params import _resolve_llm_params, use_custom_inference_openai_key_env
+from agent.core.llm_params import (
+    _resolve_llm_params,
+    use_custom_inference_openai_key_env,
+)
+from agent.core import skills as user_skills
 
 logger = logging.getLogger(__name__)
 
@@ -720,6 +727,51 @@ async def get_user_quota(user: dict = Depends(get_current_user)) -> dict:
         "premium_daily_cap": cap,
         "premium_remaining": remaining,
     }
+
+
+@router.get("/skills", response_model=list[SkillSummary])
+async def list_skills(user: dict = Depends(get_current_user)) -> list[SkillSummary]:
+    """List all local web skills belonging to the authenticated user."""
+    return [
+        SkillSummary(**skill.summary())
+        for skill in user_skills.list_skills(user["user_id"])
+    ]
+
+
+@router.get("/skills/{name}", response_model=SkillDetail)
+async def get_skill(name: str, user: dict = Depends(get_current_user)) -> SkillDetail:
+    """Fetch one local web skill belonging to the authenticated user."""
+    try:
+        skill = user_skills.get_skill(user["user_id"], name)
+    except user_skills.SkillError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if skill is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    return SkillDetail(**skill.detail())
+
+
+@router.patch("/skills/{name}", response_model=SkillDetail)
+async def toggle_skill(
+    name: str,
+    request: SkillToggleRequest,
+    user: dict = Depends(get_current_user),
+) -> SkillDetail:
+    """Manually enable or disable a local web skill."""
+    try:
+        skill = user_skills.set_skill_enabled(
+            user["user_id"], name, enabled=request.enabled
+        )
+    except user_skills.SkillError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    refreshed = await session_manager.refresh_user_skill_prompts(user["user_id"])
+    logger.info(
+        "Skill %s enabled=%s for user %s; refreshed %d sessions",
+        skill.name,
+        skill.enabled,
+        user.get("username") or user["user_id"],
+        refreshed,
+    )
+    return SkillDetail(**skill.detail())
 
 
 @router.get("/sessions", response_model=list[SessionInfo])

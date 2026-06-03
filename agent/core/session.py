@@ -116,6 +116,7 @@ class Session:
             tool_specs=tool_specs,
             hf_token=hf_token,
             local_mode=local_mode,
+            user_id=user_id,
         )
         self.event_queue = event_queue
         self.session_id = session_id or str(uuid.uuid4())
@@ -445,10 +446,24 @@ class Session:
                 tool_specs=tool_specs,
                 hf_token=self.hf_token,
                 local_mode=self.local_mode,
+                user_id=self.user_id,
             )
         except Exception as e:
             logger.warning("Failed to refresh system prompt for new chat: %s", e)
             return existing
+
+    def refresh_system_prompt(self) -> None:
+        """Refresh the leading system message with current tools and skills."""
+        system_msg = self._fresh_system_message()
+        if system_msg is None:
+            return
+        if (
+            self.context_manager.items
+            and getattr(self.context_manager.items[0], "role", None) == "system"
+        ):
+            self.context_manager.items[0] = system_msg
+        else:
+            self.context_manager.items.insert(0, system_msg)
 
     async def auto_save_if_needed(self) -> None:
         """Check if auto-save should trigger and save if so (completely non-blocking)"""

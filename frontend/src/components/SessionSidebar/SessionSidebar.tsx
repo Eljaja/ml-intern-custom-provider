@@ -19,6 +19,7 @@ import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
 import { useSessionStore } from '@/store/sessionStore';
 import { useAgentStore } from '@/store/agentStore';
 import { apiFetch } from '@/utils/api';
+import SkillsPanel from '@/components/SkillsPanel/SkillsPanel';
 
 interface SessionSidebarProps {
   onClose?: () => void;
@@ -328,6 +329,8 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
           })
         )}
       </Box>
+
+      <SkillsPanel />
 
       {/* -- Footer: New Task + status ------------------------------------- */}
       <Divider sx={{ opacity: 0.5 }} />

@@ -41,3 +41,18 @@ export interface User {
   name?: string;
   picture?: string;
 }
+
+export interface SkillSummary {
+  name: string;
+  description: string;
+  enabled: boolean;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  last_used_at?: string | null;
+  use_count: number;
+}
+
+export interface SkillDetail extends SkillSummary {
+  content: string;
+}

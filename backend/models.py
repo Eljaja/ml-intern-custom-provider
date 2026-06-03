@@ -120,6 +120,31 @@ class SessionYoloRequest(BaseModel):
     cost_cap_usd: float | None = Field(default=None, ge=0)
 
 
+class SkillSummary(BaseModel):
+    """A user skill summary for list views and prompt selection."""
+
+    name: str
+    description: str
+    enabled: bool = True
+    created_by: str = "agent"
+    created_at: str
+    updated_at: str
+    last_used_at: str | None = None
+    use_count: int = 0
+
+
+class SkillDetail(SkillSummary):
+    """Full user skill with SKILL.md body content."""
+
+    content: str
+
+
+class SkillToggleRequest(BaseModel):
+    """Manually enable or disable a user skill."""
+
+    enabled: bool
+
+
 class DatasetUploadResponse(BaseModel):
     """Response for a dataset file uploaded to the Hub."""
 

@@ -1,0 +1,322 @@
+"""Filesystem-backed procedural skills for local web sessions."""
+
+from __future__ import annotations
+
+import os
+import re
+import tempfile
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+_SKILL_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,80}$")
+_SAFE_USER_RE = re.compile(r"[^a-zA-Z0-9_.@-]+")
+_FRONTMATTER_DELIM = "---"
+_DEFAULT_SKILLS_DIR = Path.home() / ".config" / "ml-intern" / "skills"
+
+_SECRET_PATTERNS = [
+    re.compile(r"\b(hf_[A-Za-z0-9]{20,})\b"),
+    re.compile(r"\b(sk-[A-Za-z0-9_-]{20,})\b"),
+    re.compile(
+        r"(?i)\b((?:api[_-]?key|access[_-]?token|secret|password)\s*[:=]\s*)"
+        r"([^\s`'\"]{8,})"
+    ),
+]
+
+
+class SkillError(ValueError):
+    """Raised for invalid skill storage operations."""
+
+
+@dataclass(frozen=True)
+class Skill:
+    name: str
+    description: str
+    content: str
+    enabled: bool
+    created_by: str
+    created_at: str
+    updated_at: str
+    last_used_at: str | None = None
+    use_count: int = 0
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "enabled": self.enabled,
+            "created_by": self.created_by,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "last_used_at": self.last_used_at,
+            "use_count": self.use_count,
+        }
+
+    def detail(self) -> dict[str, Any]:
+        return {**self.summary(), "content": self.content}
+
+
+def utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def skills_root() -> Path:
+    configured = os.environ.get("ML_INTERN_SKILLS_DIR")
+    return Path(configured).expanduser() if configured else _DEFAULT_SKILLS_DIR
+
+
+def validate_skill_name(name: str) -> str:
+    normalized = (name or "").strip().lower()
+    if not _SKILL_NAME_RE.fullmatch(normalized):
+        raise SkillError(
+            "Skill name must start with a lowercase letter and contain only "
+            "lowercase letters, numbers, hyphens, or underscores."
+        )
+    return normalized
+
+
+def safe_user_id(user_id: str | None) -> str:
+    raw = (user_id or "dev").strip() or "dev"
+    safe = _SAFE_USER_RE.sub("_", raw).strip("._")
+    return safe or "dev"
+
+
+def _user_dir(user_id: str | None) -> Path:
+    root = skills_root().resolve()
+    user_dir = (root / safe_user_id(user_id)).resolve()
+    if root not in user_dir.parents and user_dir != root:
+        raise SkillError("Invalid user skills path.")
+    return user_dir
+
+
+def _skill_dir(user_id: str | None, name: str) -> Path:
+    user_dir = _user_dir(user_id)
+    skill_dir = (user_dir / validate_skill_name(name)).resolve()
+    if user_dir not in skill_dir.parents:
+        raise SkillError("Invalid skill path.")
+    return skill_dir
+
+
+def _skill_path(user_id: str | None, name: str) -> Path:
+    return _skill_dir(user_id, name) / "SKILL.md"
+
+
+def _redact_secrets(text: str) -> str:
+    redacted = text
+    for pattern in _SECRET_PATTERNS:
+        if pattern.groups >= 2:
+            redacted = pattern.sub(r"\1[REDACTED]", redacted)
+        else:
+            redacted = pattern.sub("[REDACTED]", redacted)
+    return redacted
+
+
+def _parse_skill_markdown(path: Path) -> Skill:
+    raw = path.read_text(encoding="utf-8")
+    if not raw.startswith(f"{_FRONTMATTER_DELIM}\n"):
+        raise SkillError(f"Skill {path} is missing YAML frontmatter.")
+    end = raw.find(f"\n{_FRONTMATTER_DELIM}\n", len(_FRONTMATTER_DELIM) + 1)
+    if end == -1:
+        raise SkillError(f"Skill {path} has malformed YAML frontmatter.")
+
+    frontmatter_raw = raw[len(_FRONTMATTER_DELIM) + 1 : end]
+    body = raw[end + len(f"\n{_FRONTMATTER_DELIM}\n") :]
+    meta = yaml.safe_load(frontmatter_raw) or {}
+    if not isinstance(meta, dict):
+        raise SkillError(f"Skill {path} frontmatter must be a YAML object.")
+
+    name = validate_skill_name(str(meta.get("name") or path.parent.name))
+    description = str(meta.get("description") or "").strip()
+    if not description:
+        description = "No description provided."
+
+    return Skill(
+        name=name,
+        description=description,
+        content=body.strip(),
+        enabled=bool(meta.get("enabled", True)),
+        created_by=str(meta.get("created_by") or "agent"),
+        created_at=str(meta.get("created_at") or utc_now_iso()),
+        updated_at=str(meta.get("updated_at") or utc_now_iso()),
+        last_used_at=meta.get("last_used_at"),
+        use_count=int(meta.get("use_count") or 0),
+    )
+
+
+def _skill_markdown(skill: Skill) -> str:
+    meta = {
+        "name": skill.name,
+        "description": skill.description,
+        "enabled": skill.enabled,
+        "created_by": skill.created_by,
+        "created_at": skill.created_at,
+        "updated_at": skill.updated_at,
+    }
+    if skill.last_used_at:
+        meta["last_used_at"] = skill.last_used_at
+    if skill.use_count:
+        meta["use_count"] = skill.use_count
+    frontmatter = yaml.safe_dump(meta, sort_keys=False, allow_unicode=False).strip()
+    body = skill.content.strip()
+    return f"{_FRONTMATTER_DELIM}\n{frontmatter}\n{_FRONTMATTER_DELIM}\n\n{body}\n"
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        delete=False,
+    ) as tmp:
+        tmp.write(content)
+        tmp_path = Path(tmp.name)
+    os.replace(tmp_path, path)
+
+
+def list_skills(user_id: str | None, *, enabled_only: bool = False) -> list[Skill]:
+    user_dir = _user_dir(user_id)
+    if not user_dir.exists():
+        return []
+
+    skills: list[Skill] = []
+    for skill_file in sorted(user_dir.glob("*/SKILL.md")):
+        try:
+            skill = _parse_skill_markdown(skill_file)
+        except Exception:
+            continue
+        if enabled_only and not skill.enabled:
+            continue
+        skills.append(skill)
+    return skills
+
+
+def get_skill(
+    user_id: str | None, name: str, *, require_enabled: bool = False
+) -> Skill | None:
+    path = _skill_path(user_id, name)
+    if not path.exists():
+        return None
+    skill = _parse_skill_markdown(path)
+    if require_enabled and not skill.enabled:
+        return None
+    return skill
+
+
+def upsert_skill(
+    user_id: str | None,
+    *,
+    name: str,
+    description: str,
+    content: str,
+    created_by: str = "agent",
+    enabled: bool | None = None,
+) -> Skill:
+    skill_name = validate_skill_name(name)
+    existing = get_skill(user_id, skill_name)
+    now = utc_now_iso()
+    enabled_value = existing.enabled if enabled is None and existing else bool(enabled)
+    if enabled is None and existing is None:
+        enabled_value = True
+
+    skill = Skill(
+        name=skill_name,
+        description=(description or "").strip() or "No description provided.",
+        content=_redact_secrets(content or ""),
+        enabled=enabled_value,
+        created_by=existing.created_by if existing else created_by,
+        created_at=existing.created_at if existing else now,
+        updated_at=now,
+        last_used_at=existing.last_used_at if existing else None,
+        use_count=existing.use_count if existing else 0,
+    )
+    _atomic_write(_skill_path(user_id, skill_name), _skill_markdown(skill))
+    return skill
+
+
+def patch_skill(
+    user_id: str | None,
+    *,
+    name: str,
+    old_string: str,
+    new_string: str,
+) -> Skill:
+    skill_name = validate_skill_name(name)
+    existing = get_skill(user_id, skill_name)
+    if existing is None:
+        raise SkillError(f"Skill '{skill_name}' does not exist.")
+    if not old_string:
+        raise SkillError("old_string is required for patch.")
+    if existing.content.count(old_string) != 1:
+        raise SkillError("old_string must match exactly one location in the skill.")
+    content = existing.content.replace(old_string, _redact_secrets(new_string), 1)
+    updated = Skill(
+        name=existing.name,
+        description=existing.description,
+        content=content,
+        enabled=existing.enabled,
+        created_by=existing.created_by,
+        created_at=existing.created_at,
+        updated_at=utc_now_iso(),
+        last_used_at=existing.last_used_at,
+        use_count=existing.use_count,
+    )
+    _atomic_write(_skill_path(user_id, skill_name), _skill_markdown(updated))
+    return updated
+
+
+def set_skill_enabled(user_id: str | None, name: str, enabled: bool) -> Skill:
+    skill_name = validate_skill_name(name)
+    existing = get_skill(user_id, skill_name)
+    if existing is None:
+        raise SkillError(f"Skill '{skill_name}' does not exist.")
+    updated = Skill(
+        name=existing.name,
+        description=existing.description,
+        content=existing.content,
+        enabled=enabled,
+        created_by=existing.created_by,
+        created_at=existing.created_at,
+        updated_at=utc_now_iso(),
+        last_used_at=existing.last_used_at,
+        use_count=existing.use_count,
+    )
+    _atomic_write(_skill_path(user_id, skill_name), _skill_markdown(updated))
+    return updated
+
+
+def record_skill_used(user_id: str | None, name: str) -> Skill | None:
+    existing = get_skill(user_id, name)
+    if existing is None:
+        return None
+    updated = Skill(
+        name=existing.name,
+        description=existing.description,
+        content=existing.content,
+        enabled=existing.enabled,
+        created_by=existing.created_by,
+        created_at=existing.created_at,
+        updated_at=existing.updated_at,
+        last_used_at=utc_now_iso(),
+        use_count=existing.use_count + 1,
+    )
+    _atomic_write(_skill_path(user_id, existing.name), _skill_markdown(updated))
+    return updated
+
+
+def enabled_skill_summaries(user_id: str | None) -> list[dict[str, Any]]:
+    return [skill.summary() for skill in list_skills(user_id, enabled_only=True)]
+
+
+def format_skill_index(user_id: str | None) -> str:
+    summaries = enabled_skill_summaries(user_id)
+    if not summaries:
+        return "No enabled skills are currently available."
+    lines = []
+    for item in summaries:
+        lines.append(f"- {item['name']}: {item['description']}")
+    return "\n".join(lines)

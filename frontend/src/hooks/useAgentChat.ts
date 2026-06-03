@@ -272,6 +272,9 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
         updateSession(sessionId, updates);
       },
       onInterrupted: () => { /* no-op — handled by stop() caller */ },
+      onSkillsUpdated: () => {
+        window.dispatchEvent(new CustomEvent('ml-intern:skills-updated'));
+      },
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sessionId],
@@ -525,6 +528,8 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
             const state = event.data?.state as string;
             const toolName = event.data?.tool as string;
             if (state === 'running' && toolName) sideChannel.onToolRunning(toolName);
+          } else if (et === 'skills_updated') {
+            sideChannel.onSkillsUpdated();
           } else if (et === 'turn_complete' || et === 'error' || et === 'interrupted') {
             sideChannel.onProcessingDone();
             stopReconnect();

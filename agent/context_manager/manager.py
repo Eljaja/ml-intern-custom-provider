@@ -139,7 +139,10 @@ async def summarize_messages(
 
     Returns ``(summary_text, completion_tokens)``.
     """
-    from agent.core.llm_params import _resolve_llm_params, use_custom_inference_openai_key_env
+    from agent.core.llm_params import (
+        _resolve_llm_params,
+        use_custom_inference_openai_key_env,
+    )
 
     prompt_messages = list(messages) + [Message(role="user", content=prompt)]
     llm_params = _resolve_llm_params(model_name, hf_token, reasoning_effort="high")
@@ -184,16 +187,19 @@ class ContextManager:
         prompt_file_suffix: str = "system_prompt_v3.yaml",
         hf_token: str | None = None,
         local_mode: bool = False,
+        user_id: str | None = None,
     ):
         self.prompt_file_suffix = prompt_file_suffix
         self.tool_specs = tool_specs or []
         self.hf_token = hf_token
         self.local_mode = local_mode
+        self.user_id = user_id
         self.system_prompt = self._load_system_prompt(
             self.tool_specs,
             prompt_file_suffix=self.prompt_file_suffix,
             hf_token=hf_token,
             local_mode=local_mode,
+            user_id=user_id,
         )
         # The model's real input-token ceiling (from litellm.get_model_info).
         # Compaction triggers at _COMPACT_THRESHOLD_RATIO below it — see
@@ -214,6 +220,7 @@ class ContextManager:
         tool_specs: list[dict[str, Any]] | None = None,
         hf_token: str | None = None,
         local_mode: bool | None = None,
+        user_id: str | None = None,
     ) -> Message:
         """Re-render the system prompt and return it as a system message."""
         if tool_specs is not None:
@@ -222,6 +229,8 @@ class ContextManager:
             self.hf_token = hf_token
         if local_mode is not None:
             self.local_mode = local_mode
+        if user_id is not None:
+            self.user_id = user_id
         self.system_prompt = self._load_system_prompt(
             self.tool_specs,
             prompt_file_suffix=getattr(
@@ -229,6 +238,7 @@ class ContextManager:
             ),
             hf_token=getattr(self, "hf_token", None),
             local_mode=getattr(self, "local_mode", False),
+            user_id=getattr(self, "user_id", None),
         )
         return Message(role="system", content=self.system_prompt)
 
@@ -238,6 +248,7 @@ class ContextManager:
         prompt_file_suffix: str = "system_prompt.yaml",
         hf_token: str | None = None,
         local_mode: bool = False,
+        user_id: str | None = None,
     ):
         """Load and render the system prompt from YAML file with Jinja2"""
         prompt_file = Path(__file__).parent.parent / "prompts" / f"{prompt_file_suffix}"
@@ -257,9 +268,18 @@ class ContextManager:
         hf_user_info = _get_hf_username(hf_token)
 
         template = Template(template_str)
+        skills_index = "No enabled skills are currently available."
+        if user_id and not local_mode:
+            try:
+                from agent.core.skills import format_skill_index
+
+                skills_index = format_skill_index(user_id)
+            except Exception as e:
+                logger.warning("Failed to load skill index: %s", e)
         static_prompt = template.render(
             tools=tool_specs,
             num_tools=len(tool_specs),
+            skills_index=skills_index,
         )
 
         tool_names = {

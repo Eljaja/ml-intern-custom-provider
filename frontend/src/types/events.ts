@@ -19,7 +19,8 @@ export type EventType =
   | 'shutdown'
   | 'interrupted'
   | 'undo_complete'
-  | 'plan_update';
+  | 'plan_update'
+  | 'skills_updated';
 
 export interface AgentEvent {
   event_type: EventType;
