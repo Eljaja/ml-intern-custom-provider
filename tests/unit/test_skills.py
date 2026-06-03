@@ -110,6 +110,15 @@ def test_context_manager_includes_enabled_skill_index(tmp_path, monkeypatch):
     assert "enabled-skill: Visible skill" in manager.system_prompt
     assert "disabled-skill" not in manager.system_prompt
 
+    local_web_manager = ContextManager(
+        tool_specs=[],
+        hf_token=None,
+        local_mode=True,
+        user_id="user",
+    )
+    assert "enabled-skill: Visible skill" in local_web_manager.system_prompt
+    assert "disabled-skill" not in local_web_manager.system_prompt
+
 
 @pytest.mark.asyncio
 async def test_skill_reflection_can_create_skill(tmp_path, monkeypatch):
@@ -149,7 +158,7 @@ async def test_skill_reflection_can_create_skill(tmp_path, monkeypatch):
     session = SimpleNamespace(
         pending_approval=None,
         is_cancelled=False,
-        local_mode=False,
+        local_mode=True,
         user_id="user",
         logged_events=events,
         context_manager=SimpleNamespace(

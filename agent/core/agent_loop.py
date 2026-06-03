@@ -119,7 +119,7 @@ async def _maybe_reflect_skill(
     """After a successful non-trivial turn, optionally create or patch a skill."""
     if errored or session.pending_approval or session.is_cancelled:
         return
-    if session.local_mode or not session.user_id:
+    if not session.user_id:
         return
 
     tool_outputs, used_skill_manage = _skill_reflection_tool_stats(

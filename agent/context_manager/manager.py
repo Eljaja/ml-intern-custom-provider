@@ -269,7 +269,7 @@ class ContextManager:
 
         template = Template(template_str)
         skills_index = "No enabled skills are currently available."
-        if user_id and not local_mode:
+        if user_id:
             try:
                 from agent.core.skills import format_skill_index
 
