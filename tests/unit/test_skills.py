@@ -8,6 +8,7 @@ from agent.context_manager.manager import ContextManager
 from agent.core import skills
 from agent.core.agent_loop import _maybe_reflect_skill
 from agent.tools.skills_tool import skill_manage_handler, skill_view_handler
+from backend.models import SkillSummary
 
 
 def test_skill_create_patch_toggle_and_isolation(tmp_path, monkeypatch):
@@ -35,6 +36,48 @@ def test_skill_create_patch_toggle_and_isolation(tmp_path, monkeypatch):
     disabled = skills.set_skill_enabled("user/one", "train-recipe", False)
     assert disabled.enabled is False
     assert skills.get_skill("user/one", "train-recipe", require_enabled=True) is None
+
+
+def test_skill_frontmatter_dates_are_api_safe(tmp_path, monkeypatch):
+    monkeypatch.setenv("ML_INTERN_SKILLS_DIR", str(tmp_path))
+    skill_dir = tmp_path / "dev" / "dated-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: dated-skill\n"
+        "description: dated\n"
+        "created_at: 2026-01-01\n"
+        "updated_at: 2026-01-02\n"
+        "last_used_at: 2026-06-03\n"
+        "use_count: 1\n"
+        "---\n\n"
+        "Procedure body.\n",
+        encoding="utf-8",
+    )
+
+    skill = skills.get_skill("dev", "dated-skill")
+    assert skill is not None
+    summary = SkillSummary(**skill.summary())
+    assert summary.last_used_at is not None
+    assert "2026-06-03" in summary.last_used_at
+
+
+def test_legacy_skill_folder_with_dots_is_readable(tmp_path, monkeypatch):
+    monkeypatch.setenv("ML_INTERN_SKILLS_DIR", str(tmp_path))
+    skill_dir = tmp_path / "dev" / "skills.md"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: skills.md\n"
+        "description: legacy folder\n"
+        "---\n\n"
+        "Keep this workflow.\n",
+        encoding="utf-8",
+    )
+
+    loaded = skills.list_skills("dev")
+    assert len(loaded) == 1
+    assert loaded[0].name == "skills-md"
 
 
 def test_skill_rejects_invalid_names_and_redacts_secrets(tmp_path, monkeypatch):

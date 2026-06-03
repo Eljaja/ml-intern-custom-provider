@@ -732,10 +732,18 @@ async def get_user_quota(user: dict = Depends(get_current_user)) -> dict:
 @router.get("/skills", response_model=list[SkillSummary])
 async def list_skills(user: dict = Depends(get_current_user)) -> list[SkillSummary]:
     """List all local web skills belonging to the authenticated user."""
-    return [
-        SkillSummary(**skill.summary())
-        for skill in user_skills.list_skills(user["user_id"])
-    ]
+    summaries: list[SkillSummary] = []
+    for skill in user_skills.list_skills(user["user_id"]):
+        try:
+            summaries.append(SkillSummary(**skill.summary()))
+        except Exception as e:
+            logger.warning(
+                "Skipping skill %s for user %s: %s",
+                skill.name,
+                user.get("user_id"),
+                e,
+            )
+    return summaries
 
 
 @router.get("/skills/{name}", response_model=SkillDetail)

@@ -6,7 +6,7 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -63,9 +63,66 @@ def utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _coerce_timestamp(value: Any) -> str | None:
+    """Normalize YAML frontmatter timestamps to ISO strings for API models."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC).isoformat()
+        return value.isoformat()
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=UTC).isoformat()
+    text = str(value).strip()
+    return text or None
+
+
+def _skill_name_from_storage(dir_name: str, meta_name: Any) -> str:
+    """Resolve a skill slug from on-disk layout, including legacy folder names."""
+    candidates: list[str] = []
+    if meta_name is not None and str(meta_name).strip():
+        candidates.append(str(meta_name).strip().lower())
+    candidates.append(dir_name.strip().lower())
+    for candidate in candidates:
+        try:
+            return validate_skill_name(candidate)
+        except SkillError:
+            slug = re.sub(r"[^a-z0-9_-]+", "-", candidate).strip("-")
+            if not slug:
+                continue
+            try:
+                return validate_skill_name(slug)
+            except SkillError:
+                continue
+    raise SkillError(f"Invalid skill name for directory {dir_name!r}")
+
+
 def skills_root() -> Path:
     configured = os.environ.get("ML_INTERN_SKILLS_DIR")
-    return Path(configured).expanduser() if configured else _DEFAULT_SKILLS_DIR
+    root = Path(configured).expanduser() if configured else _DEFAULT_SKILLS_DIR
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def docker_user_id_cache_path() -> Path | None:
+    if os.environ.get("ML_INTERN_DOCKER", "").lower() not in ("1", "true", "yes", "on"):
+        return None
+    return skills_root() / ".last-user-id"
+
+
+def read_docker_user_id_cache() -> str | None:
+    path = docker_user_id_cache_path()
+    if path is None or not path.is_file():
+        return None
+    value = path.read_text(encoding="utf-8").strip()
+    return value or None
+
+
+def write_docker_user_id_cache(user_id: str) -> None:
+    path = docker_user_id_cache_path()
+    if path is None:
+        return
+    path.write_text(safe_user_id(user_id), encoding="utf-8")
 
 
 def validate_skill_name(name: str) -> str:
@@ -128,7 +185,7 @@ def _parse_skill_markdown(path: Path) -> Skill:
     if not isinstance(meta, dict):
         raise SkillError(f"Skill {path} frontmatter must be a YAML object.")
 
-    name = validate_skill_name(str(meta.get("name") or path.parent.name))
+    name = _skill_name_from_storage(path.parent.name, meta.get("name"))
     description = str(meta.get("description") or "").strip()
     if not description:
         description = "No description provided."
@@ -139,9 +196,9 @@ def _parse_skill_markdown(path: Path) -> Skill:
         content=body.strip(),
         enabled=bool(meta.get("enabled", True)),
         created_by=str(meta.get("created_by") or "agent"),
-        created_at=str(meta.get("created_at") or utc_now_iso()),
-        updated_at=str(meta.get("updated_at") or utc_now_iso()),
-        last_used_at=meta.get("last_used_at"),
+        created_at=_coerce_timestamp(meta.get("created_at")) or utc_now_iso(),
+        updated_at=_coerce_timestamp(meta.get("updated_at")) or utc_now_iso(),
+        last_used_at=_coerce_timestamp(meta.get("last_used_at")),
         use_count=int(meta.get("use_count") or 0),
     )
 
