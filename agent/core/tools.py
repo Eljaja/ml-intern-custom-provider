@@ -53,6 +53,14 @@ from agent.tools.papers_tool import HF_PAPERS_TOOL_SPEC, hf_papers_handler
 from agent.tools.plan_tool import PLAN_TOOL_SPEC, plan_tool_handler
 from agent.tools.research_tool import RESEARCH_TOOL_SPEC, research_handler
 from agent.tools.sandbox_tool import get_sandbox_tools
+from agent.tools.skills_tool import (
+    SKILL_MANAGE_TOOL_SPEC,
+    SKILL_VIEW_TOOL_SPEC,
+    SKILLS_LIST_TOOL_SPEC,
+    skill_manage_handler,
+    skill_view_handler,
+    skills_list_handler,
+)
 from agent.tools.web_search_tool import WEB_SEARCH_TOOL_SPEC, web_search_handler
 
 # NOTE: Private HF repo tool disabled - replaced by hf_repo_files and hf_repo_git
@@ -351,6 +359,24 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
             description=PLAN_TOOL_SPEC["description"],
             parameters=PLAN_TOOL_SPEC["parameters"],
             handler=plan_tool_handler,
+        ),
+        ToolSpec(
+            name=SKILLS_LIST_TOOL_SPEC["name"],
+            description=SKILLS_LIST_TOOL_SPEC["description"],
+            parameters=SKILLS_LIST_TOOL_SPEC["parameters"],
+            handler=skills_list_handler,
+        ),
+        ToolSpec(
+            name=SKILL_VIEW_TOOL_SPEC["name"],
+            description=SKILL_VIEW_TOOL_SPEC["description"],
+            parameters=SKILL_VIEW_TOOL_SPEC["parameters"],
+            handler=skill_view_handler,
+        ),
+        ToolSpec(
+            name=SKILL_MANAGE_TOOL_SPEC["name"],
+            description=SKILL_MANAGE_TOOL_SPEC["description"],
+            parameters=SKILL_MANAGE_TOOL_SPEC["parameters"],
+            handler=skill_manage_handler,
         ),
         ToolSpec(
             name=NOTIFY_TOOL_SPEC["name"],

@@ -40,6 +40,7 @@ export interface SideChannelCallbacks {
   onStreaming: () => void;
   onToolRunning: (toolName: string, description?: string) => void;
   onInterrupted: () => void;
+  onSkillsUpdated: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +165,10 @@ function createEventToChunkStream(sideChannel: SideChannelCallbacks): TransformS
           sideChannel.onPlanUpdate(
             (event.data?.plan as Array<{ id: string; content: string; status: string }>) || [],
           );
+          break;
+
+        case 'skills_updated':
+          sideChannel.onSkillsUpdated();
           break;
 
         case 'tool_log':

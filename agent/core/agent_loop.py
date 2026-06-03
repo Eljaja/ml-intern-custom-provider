@@ -19,12 +19,16 @@ from litellm import (
 from litellm.exceptions import ContextWindowExceededError
 
 from agent.config import Config
+from agent.core import skills as user_skills
 from agent.core.approval_policy import normalize_tool_operation
 from agent.core.cost_estimation import CostEstimate, estimate_tool_cost
 from agent.messaging.gateway import NotificationGateway
 from agent.core import telemetry
 from agent.core.doom_loop import check_for_doom_loop
-from agent.core.llm_params import _resolve_llm_params, use_custom_inference_openai_key_env
+from agent.core.llm_params import (
+    _resolve_llm_params,
+    use_custom_inference_openai_key_env,
+)
 from agent.core.prompt_caching import with_prompt_caching
 from agent.core.session import DEFAULT_SESSION_LOG_DIR, Event, OpType, Session
 from agent.core.tools import ToolRouter
@@ -36,6 +40,7 @@ ToolCall = ChatCompletionMessageToolCall
 _MALFORMED_TOOL_PREFIX = "ERROR: Tool call to '"
 _MALFORMED_TOOL_SUFFIX = "' had malformed JSON arguments"
 _NO_TOOL_INCOMPLETE_PLAN_RETRY_LIMIT = 2
+_SKILL_REFLECTION_MIN_TOOL_OUTPUTS = 2
 
 
 def _unfinished_plan_items(session: Session) -> list[dict[str, str]]:
@@ -72,6 +77,131 @@ def _no_tool_incomplete_plan_prompt(items: list[dict[str, str]]) -> str:
         "now. If you genuinely cannot continue, first use tools to inspect the "
         "state or verify the blocker."
     )
+
+
+def _recent_messages_for_skill_reflection(session: Session, limit: int = 10) -> str:
+    snippets: list[str] = []
+    for message in session.context_manager.items[-limit:]:
+        role = getattr(message, "role", "unknown")
+        name = getattr(message, "name", None)
+        content = getattr(message, "content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        label = f"{role}:{name}" if name else str(role)
+        snippets.append(f"{label}\n{content[:3000]}")
+    return "\n\n---\n\n".join(snippets)
+
+
+def _skill_reflection_tool_stats(
+    session: Session, event_start_idx: int
+) -> tuple[int, bool]:
+    tool_outputs = 0
+    used_skill_manage = False
+    for event in session.logged_events[event_start_idx:]:
+        if event.get("event_type") not in {"tool_call", "tool_output"}:
+            continue
+        data = event.get("data") or {}
+        tool = data.get("tool")
+        if tool == "skill_manage":
+            used_skill_manage = True
+        if event.get("event_type") == "tool_output" and data.get("success") is True:
+            if tool not in {"skills_list", "skill_view", "skill_manage", "plan_tool"}:
+                tool_outputs += 1
+    return tool_outputs, used_skill_manage
+
+
+async def _maybe_reflect_skill(
+    session: Session,
+    *,
+    event_start_idx: int,
+    errored: bool,
+) -> None:
+    """After a successful non-trivial turn, optionally create or patch a skill."""
+    if errored or session.pending_approval or session.is_cancelled:
+        return
+    if not session.user_id:
+        return
+
+    tool_outputs, used_skill_manage = _skill_reflection_tool_stats(
+        session, event_start_idx
+    )
+    if used_skill_manage or tool_outputs < _SKILL_REFLECTION_MIN_TOOL_OUTPUTS:
+        return
+
+    summaries = user_skills.enabled_skill_summaries(session.user_id)
+    prompt = (
+        "You are maintaining procedural skills for future runs of this web agent.\n"
+        "Decide whether the latest turn contains a reusable multi-step workflow worth "
+        "saving or an improvement to an existing skill.\n\n"
+        "Return ONLY compact JSON with one of these shapes:\n"
+        '{"action":"noop"}\n'
+        '{"action":"create","name":"lowercase-slug","description":"short summary",'
+        '"content":"full procedural markdown body"}\n'
+        '{"action":"patch","name":"existing-skill","old_string":"exact text",'
+        '"new_string":"replacement text"}\n\n'
+        "Rules:\n"
+        "- Save procedures, not one-off facts.\n"
+        "- Do not include secrets, tokens, credentials, or private user data.\n"
+        "- Prefer noop unless the workflow is clearly reusable.\n"
+        "- Patch only when old_string can be copied exactly from the existing skill.\n\n"
+        f"Existing enabled skills:\n{json.dumps(summaries, indent=2)}\n\n"
+        f"Recent conversation/tool context:\n{_recent_messages_for_skill_reflection(session)}"
+    )
+
+    try:
+        llm_params = _resolve_llm_params(
+            session.config.model_name,
+            session.hf_token,
+            reasoning_effort=session.effective_effort_for(session.config.model_name),
+        )
+        async with use_custom_inference_openai_key_env(
+            session.config.model_name, llm_params
+        ):
+            response = await acompletion(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Return only valid JSON. No markdown fences.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                max_completion_tokens=2500,
+                timeout=120,
+                **llm_params,
+            )
+        raw = response.choices[0].message.content or "{}"
+        decision = json.loads(raw.strip())
+        if not isinstance(decision, dict):
+            return
+        action = decision.get("action")
+        if action == "noop":
+            return
+        if action == "create":
+            skill = user_skills.upsert_skill(
+                session.user_id,
+                name=str(decision.get("name") or ""),
+                description=str(decision.get("description") or ""),
+                content=str(decision.get("content") or ""),
+                created_by="agent",
+            )
+        elif action == "patch":
+            skill = user_skills.patch_skill(
+                session.user_id,
+                name=str(decision.get("name") or ""),
+                old_string=str(decision.get("old_string") or ""),
+                new_string=str(decision.get("new_string") or ""),
+            )
+        else:
+            return
+        session.refresh_system_prompt()
+        await session.send_event(
+            Event(
+                event_type="skills_updated",
+                data={"name": skill.name, "action": action, "enabled": skill.enabled},
+            )
+        )
+    except Exception as e:
+        logger.debug("Skill reflection skipped/failed: %s", e)
 
 
 def _malformed_tool_name(message: Message) -> str | None:
@@ -260,11 +390,10 @@ def _budget_block_reason(
     return None
 
 
-
-
 def _is_scheduled_hf_job_run(tool_name: str, tool_args: dict) -> bool:
     """HF Jobs integration removed in this fork."""
     return False
+
 
 async def _approval_decision(
     tool_name: str,
@@ -1158,6 +1287,7 @@ class Handlers:
         errored = False
         max_iterations = session.config.max_iterations
         no_tool_incomplete_plan_retries = 0
+        event_start_idx = len(session.logged_events)
 
         while max_iterations == -1 or iteration < max_iterations:
             # ── Cancellation check: before LLM call ──
@@ -1679,6 +1809,9 @@ class Handlers:
             await _cleanup_on_cancel(session)
             await session.send_event(Event(event_type="interrupted"))
         elif not errored:
+            await _maybe_reflect_skill(
+                session, event_start_idx=event_start_idx, errored=errored
+            )
             await session.send_event(
                 Event(
                     event_type="turn_complete",

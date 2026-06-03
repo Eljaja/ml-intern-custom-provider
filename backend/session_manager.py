@@ -824,6 +824,27 @@ class SessionManager:
         except Exception as e:
             logger.debug("record_pro_conversion failed: %s", e)
 
+    async def refresh_user_skill_prompts(self, user_id: str) -> int:
+        """Refresh system prompts for active sessions owned by a user."""
+        refreshed = 0
+        async with self._lock:
+            agent_sessions = [
+                s
+                for s in self.sessions.values()
+                if s.user_id == user_id and s.is_active
+            ]
+        for agent_session in agent_sessions:
+            try:
+                agent_session.session.refresh_system_prompt()
+                refreshed += 1
+            except Exception as e:
+                logger.warning(
+                    "Failed to refresh skill prompt for session %s: %s",
+                    agent_session.session_id,
+                    e,
+                )
+        return refreshed
+
     async def seed_from_summary(self, session_id: str, messages: list[dict]) -> int:
         """Rehydrate a session from cached prior messages via summarization.
 
