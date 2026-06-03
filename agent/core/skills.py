@@ -104,8 +104,17 @@ def skills_root() -> Path:
     return root
 
 
+def is_docker_deploy() -> bool:
+    return os.environ.get("ML_INTERN_DOCKER", "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def docker_user_id_cache_path() -> Path | None:
-    if os.environ.get("ML_INTERN_DOCKER", "").lower() not in ("1", "true", "yes", "on"):
+    if not is_docker_deploy():
         return None
     return skills_root() / ".last-user-id"
 
@@ -118,10 +127,36 @@ def read_docker_user_id_cache() -> str | None:
     return value or None
 
 
+def migrate_dev_skills_if_needed(user_id: str) -> int:
+    """Move skills created under the fallback ``dev`` user into the real HF namespace."""
+    target = safe_user_id(user_id)
+    if target == "dev":
+        return 0
+    dev_dir = _user_dir("dev")
+    user_dir = _user_dir(user_id)
+    if not dev_dir.is_dir():
+        return 0
+    user_dir.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for skill_dir in sorted(dev_dir.iterdir()):
+        if not skill_dir.is_dir():
+            continue
+        skill_file = skill_dir / "SKILL.md"
+        if not skill_file.is_file():
+            continue
+        destination = user_dir / skill_dir.name
+        if destination.exists():
+            continue
+        skill_dir.rename(destination)
+        moved += 1
+    return moved
+
+
 def write_docker_user_id_cache(user_id: str) -> None:
     path = docker_user_id_cache_path()
     if path is None:
         return
+    migrate_dev_skills_if_needed(user_id)
     path.write_text(safe_user_id(user_id), encoding="utf-8")
 
 

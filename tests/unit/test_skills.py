@@ -62,6 +62,22 @@ def test_skill_frontmatter_dates_are_api_safe(tmp_path, monkeypatch):
     assert "2026-06-03" in summary.last_used_at
 
 
+def test_migrate_dev_skills_into_hf_user(tmp_path, monkeypatch):
+    monkeypatch.setenv("ML_INTERN_SKILLS_DIR", str(tmp_path))
+    dev_dir = tmp_path / "dev" / "workflow"
+    dev_dir.mkdir(parents=True)
+    (dev_dir / "SKILL.md").write_text(
+        "---\nname: workflow\ndescription: dev skill\n---\n\nBody.\n",
+        encoding="utf-8",
+    )
+
+    moved = skills.migrate_dev_skills_if_needed("alice")
+    assert moved == 1
+    assert not dev_dir.exists()
+    assert (tmp_path / "alice" / "workflow" / "SKILL.md").exists()
+    assert skills.list_skills("alice")[0].name == "workflow"
+
+
 def test_legacy_skill_folder_with_dots_is_readable(tmp_path, monkeypatch):
     monkeypatch.setenv("ML_INTERN_SKILLS_DIR", str(tmp_path))
     skill_dir = tmp_path / "dev" / "skills.md"
