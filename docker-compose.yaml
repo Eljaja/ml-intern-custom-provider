@@ -1,10 +1,28 @@
 # Start: docker compose up --build
-# With GPU: requires NVIDIA Container Toolkit on the host; use --profile gpu or the default (gpus) below.
+# With GPU: requires NVIDIA Container Toolkit on the host; remove the `gpus` block for CPU-only.
 #
 # Open UI:  http://localhost:8080  (API proxied to backend)
 # API root: http://localhost:7860/api
+#
+# Named volumes keep data across `docker compose up --build` / image rebuilds:
+#   - Chat sessions (sidebar experiments): MongoDB (`mongo` + MONGODB_URI)
+#   - Agent code/files: /data/ml-intern/workspace (bash/read/write with AGENT_LOCAL_MODE)
+#   - Learned skills: /data/ml-intern/skills (ML_INTERN_SKILLS_DIR)
+#   - Local trajectory JSON backups: /data/ml-intern/workspace/session_logs
 
 services:
+  mongo:
+    image: mongo:7
+    container_name: ml-intern-mongo
+    volumes:
+      - ml-intern-mongo:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
   backend:
     build:
       context: .
@@ -16,13 +34,34 @@ services:
     environment:
       # Browser origins when the frontend is on host port 8080 (mapped to container :80)
       CORS_ORIGINS: "http://localhost:8080,http://127.0.0.1:8080,http://localhost,http://127.0.0.1"
+      # Persist chat sessions across backend container rebuilds (see mongo service).
+      MONGODB_URI: mongodb://mongo:27017
+      MONGODB_DB: ml-intern
+      # Filesystem paths on the named volume below.
+      ML_INTERN_SKILLS_DIR: /data/ml-intern/skills
+      ML_INTERN_WORKSPACE: /app/backend/workspace
+      # Run bash/read/write on the persistent workspace (trusted local Docker only).
+      AGENT_LOCAL_MODE: "1"
+    volumes:
+      - ml-intern-data:/data/ml-intern
     ports:
       - "7860:7860"
+    depends_on:
+      mongo:
+        condition: service_healthy
     # GPU (NVIDIA Container Toolkit on the host). For CPU-only, remove the whole `gpus` block.
     gpus:
       - driver: nvidia
         count: all
         capabilities: [gpu]
+    command:
+      - /bin/sh
+      - -c
+      - |
+        mkdir -p /data/ml-intern/skills /data/ml-intern/workspace /data/ml-intern/session_logs
+        ln -sfn /data/ml-intern/workspace /app/backend/workspace
+        ln -sfn /data/ml-intern/session_logs /app/backend/session_logs
+        cd /app/backend && exec uvicorn main:app --host 0.0.0.0 --port $${PORT:-7860}
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7860/api"]
       interval: 20s
@@ -41,6 +80,10 @@ services:
     ports:
       - "8080:80"
     # Same Docker network: nginx proxies /api and /auth to `backend:7860` (see docker/nginx.conf)
+
+volumes:
+  ml-intern-data:
+  ml-intern-mongo:
 
 networks:
   default:
