@@ -452,18 +452,33 @@ class Session:
             logger.warning("Failed to refresh system prompt for new chat: %s", e)
             return existing
 
-    def refresh_system_prompt(self) -> None:
-        """Refresh the leading system message with current tools and skills."""
+    def refresh_system_prompt(self) -> bool:
+        """Refresh the leading system message with current tools and skills.
+
+        Returns True when the message was actually replaced.
+
+        Rewriting the system message costs real money on Anthropic: it is the
+        stable cache-prefix breakpoint (see ``agent.core.prompt_caching``), so a
+        byte for byte identical re-render would still invalidate the prefix and
+        make the next turn pay full input price for the whole context. Callers
+        fire this on every skill mutation, including ones that don't change the
+        rendered index (a toggle flipped back, a use_count bump), so compare
+        before swapping.
+        """
         system_msg = self._fresh_system_message()
         if system_msg is None:
-            return
-        if (
-            self.context_manager.items
-            and getattr(self.context_manager.items[0], "role", None) == "system"
-        ):
-            self.context_manager.items[0] = system_msg
+            return False
+
+        items = self.context_manager.items
+        if items and getattr(items[0], "role", None) == "system":
+            if getattr(items[0], "content", None) == getattr(
+                system_msg, "content", None
+            ):
+                return False
+            items[0] = system_msg
         else:
-            self.context_manager.items.insert(0, system_msg)
+            items.insert(0, system_msg)
+        return True
 
     async def auto_save_if_needed(self) -> None:
         """Check if auto-save should trigger and save if so (completely non-blocking)"""
