@@ -28,7 +28,12 @@ load_dotenv(override=False)
 
 from routes.agent import router as agent_router  # noqa: E402
 from routes.auth import router as auth_router  # noqa: E402
+from runtime_guard import assert_safe_runtime  # noqa: E402
 from session_manager import session_manager  # noqa: E402
+
+# Fail fast on shell-access-without-auth. Must run after the .env loads above,
+# since that is where OAUTH_CLIENT_ID and AGENT_LOCAL_MODE come from.
+assert_safe_runtime()
 
 # Configure logging
 logging.basicConfig(

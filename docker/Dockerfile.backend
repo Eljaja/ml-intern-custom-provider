@@ -10,6 +10,7 @@ RUN apt-get update \
         curl \
         git \
         software-properties-common \
+        util-linux \
     && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -22,14 +23,34 @@ RUN apt-get update \
 
 ENV UV_LINK_MODE=copy
 
+# Unprivileged account for the server process. The entrypoint still starts as
+# root (it has to chown the named volume, which docker creates root-owned) and
+# drops to this uid with setpriv before exec'ing uvicorn — see
+# docker-compose.yaml. Fixed uid/gid so file ownership on the volume survives
+# image rebuilds.
+ARG APP_UID=10001
+ARG APP_GID=10001
+RUN groupadd --gid ${APP_GID} mlintern \
+    && useradd --uid ${APP_UID} --gid ${APP_GID} --create-home --shell /usr/sbin/nologin mlintern
+ENV ML_INTERN_RUN_AS_UID=${APP_UID} \
+    ML_INTERN_RUN_AS_GID=${APP_GID}
+
 WORKDIR /app
+
+# Dependency layer first: with the project sources copied before `uv sync`, every
+# source edit invalidated the whole dependency install on top of a multi-GB CUDA
+# base. --no-install-project resolves and installs third-party deps only, so that
+# layer is reused until pyproject.toml/uv.lock actually change.
 COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
 COPY agent ./agent
 COPY configs ./configs
 COPY backend ./backend
 
-# Install the hf-agent project (includes `agent` package) and backend deps
-RUN uv sync --frozen --no-dev
+# Now install the project itself (the `agent` package) into the same venv.
+RUN uv sync --frozen --no-dev \
+    && chown -R ${APP_UID}:${APP_GID} /app
 
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1
@@ -39,5 +60,7 @@ WORKDIR /app/backend
 
 EXPOSE 7860
 
-# PORT can be set by the orchestrator; default 7860 matches local dev
+# PORT can be set by the orchestrator; default 7860 matches local dev.
+# Standalone `docker run` has no volume to chown, so drop privileges immediately.
+USER mlintern
 CMD ["/bin/sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-7860}"]

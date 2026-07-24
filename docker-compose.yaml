@@ -1,8 +1,22 @@
-# Start: docker compose up --build
-# With GPU: requires NVIDIA Container Toolkit on the host; remove the `gpus` block for CPU-only.
+# Start (CPU, works on any host):
+#     docker compose up --build
+#
+# With GPUs (needs the NVIDIA Container Toolkit on the host):
+#     docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up --build
 #
 # Open UI:  http://localhost:8080  (API proxied to backend)
 # API root: http://localhost:7860/api
+#
+# EXPOSURE: both published ports below are bound to 127.0.0.1 on purpose. This
+# stack runs with AGENT_LOCAL_MODE=1 (the agent gets a shell in the container)
+# and without OAUTH_CLIENT_ID (auth disabled — every caller is served as the
+# 'dev' user at the Pro tier). Published on 0.0.0.0, that combination lets
+# anyone who can route to this host run arbitrary commands and read HF_TOKEN /
+# ANTHROPIC_API_KEY / GITHUB_TOKEN / ZULIP_API_KEY out of the container
+# environment. backend/runtime_guard.py refuses to start unless the
+# acknowledgement below is set; do not set it while widening these bindings.
+# To serve this to other machines, configure HF OAuth (OAUTH_CLIENT_ID) and
+# remove the acknowledgement instead of changing the port bindings.
 #
 # Named volumes keep data across `docker compose up --build` / image rebuilds:
 #   - Chat sessions (sidebar experiments): MongoDB (`mongo` + MONGODB_URI)
@@ -14,6 +28,7 @@ services:
   mongo:
     image: mongo:7
     container_name: ml-intern-mongo
+    restart: unless-stopped
     volumes:
       - ml-intern-mongo:/data/db
     healthcheck:
@@ -29,6 +44,7 @@ services:
       dockerfile: docker/Dockerfile.backend
     image: ml-intern-backend:local
     container_name: ml-intern-backend
+    restart: unless-stopped
     env_file:
       - .env
     environment:
@@ -43,26 +59,40 @@ services:
       ML_INTERN_WORKSPACE: /app/backend/workspace
       # Run bash/read/write on the persistent workspace (trusted local Docker only).
       AGENT_LOCAL_MODE: "1"
+      # Acknowledges shell-access-without-auth. Only tolerable because the ports
+      # here are loopback-only — see the EXPOSURE note above and
+      # backend/runtime_guard.py.
+      ML_INTERN_ALLOW_UNAUTHENTICATED_LOCAL_MODE: "1"
     volumes:
       - ml-intern-data:/data/ml-intern
     ports:
-      - "7860:7860"
+      - "127.0.0.1:7860:7860"
     depends_on:
       mongo:
         condition: service_healthy
-    # GPU (NVIDIA Container Toolkit on the host). For CPU-only, remove the whole `gpus` block.
-    gpus:
-      - driver: nvidia
-        count: all
-        capabilities: [gpu]
+    # Overrides the image's `USER mlintern`: the bootstrap below needs root to
+    # chown the named volume (docker creates it root-owned), then hands the
+    # server process to the unprivileged uid via setpriv.
+    user: root
     command:
       - /bin/sh
       - -c
       - |
+        set -e
         mkdir -p /data/ml-intern/skills /data/ml-intern/workspace /data/ml-intern/session_logs
+        # Recursive chown only on the first boot after this change — walking a
+        # workspace full of checkpoints on every restart would be slow.
+        if [ "$$(stat -c %u /data/ml-intern)" != "$${ML_INTERN_RUN_AS_UID}" ]; then
+          echo "Adopting /data/ml-intern for uid $${ML_INTERN_RUN_AS_UID} (one-time)"
+          chown -R "$${ML_INTERN_RUN_AS_UID}:$${ML_INTERN_RUN_AS_GID}" /data/ml-intern
+        fi
         ln -sfn /data/ml-intern/workspace /app/backend/workspace
         ln -sfn /data/ml-intern/session_logs /app/backend/session_logs
-        cd /app/backend && exec uvicorn main:app --host 0.0.0.0 --port $${PORT:-7860}
+        cd /app/backend
+        exec setpriv --reuid="$${ML_INTERN_RUN_AS_UID}" \
+                     --regid="$${ML_INTERN_RUN_AS_GID}" \
+                     --clear-groups \
+          uvicorn main:app --host 0.0.0.0 --port "$${PORT:-7860}"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7860/api"]
       interval: 20s
@@ -76,10 +106,14 @@ services:
       dockerfile: docker/Dockerfile.frontend
     image: ml-intern-frontend:local
     container_name: ml-intern-frontend
+    restart: unless-stopped
     depends_on:
-      - backend
+      # Wait until /api actually answers. nginx re-resolves `backend` per request
+      # (docker/nginx.conf), but this still avoids a 502 on the very first load.
+      backend:
+        condition: service_healthy
     ports:
-      - "8080:80"
+      - "127.0.0.1:8080:80"
     # Same Docker network: nginx proxies /api and /auth to `backend:7860` (see docker/nginx.conf)
 
 volumes:

@@ -1,0 +1,15 @@
+# GPU overlay. Use together with the base file:
+#
+#     docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up --build
+#
+# Kept separate because a `gpus` reservation makes `docker compose up` fail
+# outright on any host without the NVIDIA Container Toolkit. It used to live in
+# docker-compose.yaml with a comment telling you to delete the block by hand for
+# CPU-only runs, which meant the default configuration did not start on most
+# machines.
+services:
+  backend:
+    gpus:
+      - driver: nvidia
+        count: all
+        capabilities: [gpu]
