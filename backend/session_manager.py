@@ -6,7 +6,7 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -96,8 +96,14 @@ class AgentSession:
     hf_token: str | None = None  # User's HF OAuth token for tool execution
     task: asyncio.Task | None = None
     created_at: datetime = field(default_factory=datetime.utcnow)
+    # Drives the idle reaper. Defaults to creation time so a freshly restored but
+    # untouched session isn't reaped before it has had a full idle window.
+    last_active_at: datetime = field(default_factory=datetime.utcnow)
     is_active: bool = True
     is_processing: bool = False  # True while a submission is being executed
+    # Set under the lock while the reaper tears this session down. Blocks submit()
+    # from enqueueing work onto a session that is about to be evicted.
+    is_reaping: bool = False
     broadcaster: Any = None
     title: str | None = None
     # True once this session has been counted against the user's daily
@@ -125,6 +131,19 @@ DEFAULT_YOLO_COST_CAP_USD: float = 5.0
 SANDBOX_SHUTDOWN_CLEANUP_CONCURRENCY: int = 10
 SANDBOX_SHUTDOWN_CLEANUP_TIMEOUT_S: float = 60.0
 
+# ── Idle-session reaper ─────────────────────────────────────────────
+# A live session idle for REAPER_IDLE_MINUTES with no in-flight work has its
+# sandbox and RAM released and is evicted from the live pool. It stays fully
+# resumable from Mongo — it reappears as a normal chat in the sidebar and is never
+# marked "ended".
+#
+# Without this, nothing ever left self.sessions: forgotten runtimes held their
+# memory and sandbox until the process restarted, and the pool filled up until
+# create started failing with "Server is at capacity".
+REAPER_IDLE_MINUTES: float = float(os.environ.get("REAPER_IDLE_MINUTES", "15"))
+REAPER_INTERVAL_S: float = float(os.environ.get("REAPER_INTERVAL_S", "300"))
+REAPER_IDLE = timedelta(minutes=REAPER_IDLE_MINUTES)
+
 
 class SessionManager:
     """Manages multiple concurrent agent sessions."""
@@ -135,20 +154,169 @@ class SessionManager:
         self.sessions: dict[str, AgentSession] = {}
         self._lock = asyncio.Lock()
         self.persistence_store = None
+        self._reaper_task: asyncio.Task | None = None
 
     async def start(self) -> None:
         """Start shared background resources."""
         self.persistence_store = get_session_store()
         await self.persistence_store.init()
         await self.messaging_gateway.start()
+        if getattr(self, "_reaper_task", None) is None:
+            self._reaper_task = asyncio.create_task(
+                self._reaper_loop(), name="idle-session-reaper"
+            )
 
     async def close(self) -> None:
         """Flush and close shared background resources."""
+        # getattr: several tests (and any other path that builds a manager via
+        # __new__ without __init__) never set this attribute.
+        reaper_task = getattr(self, "_reaper_task", None)
+        if reaper_task is not None:
+            reaper_task.cancel()
+            try:
+                await reaper_task
+            except asyncio.CancelledError:
+                pass
+            self._reaper_task = None
         await self._drain_session_background_tasks()
         await self._cleanup_all_sandboxes_on_close()
         await self.messaging_gateway.close()
         if self.persistence_store is not None:
             await self.persistence_store.close()
+
+    @staticmethod
+    def touch_activity(agent_session: AgentSession | None) -> None:
+        """Reset the idle clock. Called on genuine user or agent activity only.
+
+        Not on polling: the frontend re-reads /api/events and session metadata on
+        a timer, and counting that would keep an abandoned session alive forever —
+        which is the bug the reaper exists to fix.
+        """
+        if agent_session is not None:
+            agent_session.last_active_at = datetime.utcnow()
+
+    async def _reaper_loop(self) -> None:
+        """Periodically release the resources held by idle sessions."""
+        while True:
+            try:
+                await asyncio.sleep(REAPER_INTERVAL_S)
+                await self._reap_idle_sessions()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error("Idle-session reaper sweep failed: %s", e)
+
+    async def _reap_idle_sessions(self) -> int:
+        """Pick idle candidates under the lock, then tear each one down.
+
+        Candidates are live sessions that are not processing, not awaiting an
+        approval (those are "approve later", not idle — reaping would destroy the
+        sandbox the approved tool is about to use) and untouched for the whole idle
+        window. Only ids are collected under the lock; ``_reap_one`` re-acquires
+        it, because tearing a session down while holding a non-reentrant lock
+        would deadlock.
+        """
+        # Eviction is only safe while sessions stay resumable from Mongo. With no
+        # store, it would destroy the conversation outright.
+        if not getattr(self._store(), "enabled", False):
+            return 0
+
+        cutoff = datetime.utcnow() - REAPER_IDLE
+        async with self._lock:
+            candidates = [
+                s.session_id
+                for s in self.sessions.values()
+                if s.is_active
+                and not s.is_processing
+                and not s.is_reaping
+                and not s.session.pending_approval
+                and s.last_active_at <= cutoff
+            ]
+        if not candidates:
+            return 0
+
+        reaped = 0
+        for session_id in candidates:
+            try:
+                if await self._reap_one(session_id, cutoff):
+                    reaped += 1
+            except Exception as e:
+                logger.warning("Failed to reap idle session %s: %s", session_id, e)
+        if reaped:
+            logger.info("Reaped %d idle session(s)", reaped)
+        return reaped
+
+    async def _reap_one(self, session_id: str, cutoff: datetime) -> bool:
+        """Tear down one idle session, leaving it resumable from Mongo.
+
+        Re-checks every idle condition under the lock, because the user may have
+        become active in the gap since selection. Marks the session reaping, writes
+        a resumable snapshot *outside* the lock (Mongo writes take network round
+        trips, and is_reaping already blocks submit), then re-checks once more
+        before evicting.
+        """
+        async with self._lock:
+            agent_session = self.sessions.get(session_id)
+            if (
+                agent_session is None
+                or not agent_session.is_active
+                or agent_session.is_processing
+                or agent_session.is_reaping
+                or agent_session.session.pending_approval
+                or agent_session.last_active_at > cutoff
+                or not agent_session.submission_queue.empty()
+            ):
+                return False
+            agent_session.is_reaping = True
+
+        # status="active", never "ended": this must come back as a normal chat.
+        try:
+            await self.persist_session_snapshot(
+                agent_session,
+                runtime_state="idle",
+                status="active",
+                raise_on_error=True,
+            )
+        except Exception as e:
+            async with self._lock:
+                if self.sessions.get(session_id) is agent_session:
+                    agent_session.is_reaping = False
+            logger.warning(
+                "Skipping reap of %s: could not persist a resumable snapshot: %s",
+                session_id,
+                e,
+            )
+            return False
+
+        async with self._lock:
+            if self.sessions.get(session_id) is not agent_session:
+                return False
+            if (
+                agent_session.is_processing
+                or agent_session.session.pending_approval
+                or not agent_session.submission_queue.empty()
+            ):
+                agent_session.is_reaping = False
+                return False
+            self.sessions.pop(session_id, None)
+            agent_session.is_active = False
+
+        await self._cleanup_sandbox(agent_session.session)
+
+        # Cancelled outside the lock: the task's own finally frees its resources,
+        # and its persist no-ops because the session is already popped — so it
+        # cannot overwrite the resumable snapshot we just wrote.
+        if agent_session.task and not agent_session.task.done():
+            agent_session.task.cancel()
+            try:
+                await agent_session.task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.debug("Reaped session task %s ended with: %s", session_id, e)
+
+        logger.info("Reaped idle session %s (resumable from store)", session_id)
+        return True
 
     async def _drain_session_background_tasks(self) -> None:
         """Let detached per-session work finish before the loop goes away.
@@ -550,10 +718,18 @@ class SessionManager:
         *,
         runtime_state: str | None = None,
         status: str = "active",
+        raise_on_error: bool = False,
     ) -> None:
-        """Persist the current runtime context snapshot."""
+        """Persist the current runtime context snapshot.
+
+        ``raise_on_error`` is for callers that are about to throw the live session
+        away and therefore need to know the snapshot actually landed — the idle
+        reaper. Everything else keeps the best-effort behaviour.
+        """
         store = self._store()
         if not getattr(store, "enabled", False):
+            if raise_on_error:
+                raise RuntimeError("Session store is disabled; cannot persist")
             return
         try:
             await store.save_snapshot(
@@ -589,6 +765,8 @@ class SessionManager:
                 ),
             )
         except Exception as e:
+            if raise_on_error:
+                raise
             logger.warning(
                 "Failed to persist snapshot for %s: %s",
                 agent_session.session_id,
@@ -1021,6 +1199,10 @@ class SessionManager:
                             )
                         finally:
                             agent_session.is_processing = False
+                            # Re-stamp: last_active_at was set when the work was
+                            # submitted, so after a long turn the session would be
+                            # instantly reapable the moment it stopped processing.
+                            self.touch_activity(agent_session)
                             await self.persist_session_snapshot(agent_session)
                         if not should_continue:
                             break
@@ -1068,15 +1250,24 @@ class SessionManager:
 
     async def submit(self, session_id: str, operation: Operation) -> bool:
         """Submit an operation to a session."""
+        submission = Submission(id=f"sub_{uuid.uuid4().hex[:8]}", operation=operation)
+
+        # Enqueue under the lock so the reaper cannot decide a session is idle
+        # between our check and our put, and refuse a session already being torn
+        # down — its queue is about to be discarded.
         async with self._lock:
             agent_session = self.sessions.get(session_id)
-
-        if not agent_session or not agent_session.is_active:
-            logger.warning(f"Session {session_id} not found or inactive")
-            return False
-
-        submission = Submission(id=f"sub_{uuid.uuid4().hex[:8]}", operation=operation)
-        await agent_session.submission_queue.put(submission)
+            if not agent_session or not agent_session.is_active:
+                logger.warning(f"Session {session_id} not found or inactive")
+                return False
+            if agent_session.is_reaping:
+                logger.warning(
+                    "Session %s is being released for inactivity; retry to resume it",
+                    session_id,
+                )
+                return False
+            self.touch_activity(agent_session)
+            agent_session.submission_queue.put_nowait(submission)
         return True
 
     async def submit_user_input(self, session_id: str, text: str) -> bool:
