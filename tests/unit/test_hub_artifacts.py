@@ -20,6 +20,7 @@ from agent.tools import local_tools, sandbox_tool
 from agent.tools.hf_repo_files_tool import HfRepoFilesTool
 from agent.tools.hf_repo_git_tool import HfRepoGitTool
 
+
 def _session() -> SimpleNamespace:
     return SimpleNamespace(
         session_id="session-123",

@@ -205,7 +205,10 @@ async def archive_search_handler(arguments: dict[str, Any]) -> tuple[str, bool]:
         result = await handler(arguments, limit)
         return result["formatted"], not result.get("isError", False)
     except httpx.HTTPStatusError as e:
-        return f"archive.org HTTP {e.response.status_code}: {e.response.text[:300]}", False
+        return (
+            f"archive.org HTTP {e.response.status_code}: {e.response.text[:300]}",
+            False,
+        )
     except httpx.RequestError as e:
         return f"archive.org request error: {e}", False
     except Exception as e:

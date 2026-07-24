@@ -116,7 +116,9 @@ def _load_inference_dotenv() -> None:
         from dotenv import load_dotenv
     except Exception:
         return
-    project_root = Path(__file__).resolve().parents[2]  # agent/core/llm_params.py -> repo root
+    project_root = (
+        Path(__file__).resolve().parents[2]
+    )  # agent/core/llm_params.py -> repo root
     # Project-local .env should beat inherited env like stale test keys.
     load_dotenv(project_root / ".env", override=True)
     load_dotenv(Path.cwd() / ".env", override=False)
@@ -126,87 +128,6 @@ def _load_inference_dotenv() -> None:
 _load_inference_dotenv()
 
 
-def _resolve_hf_router_token(session_hf_token: str | None = None) -> str | None:
-    """Backward-compatible private wrapper used by tests and older imports."""
-    return resolve_hf_router_token(session_hf_token)
-
-
-def _patch_litellm_effort_validation() -> None:
-    """Neuter LiteLLM 1.83's hardcoded effort-level validation.
-
-    Context: at ``litellm/llms/anthropic/chat/transformation.py:~1443`` the
-    Anthropic adapter validates ``output_config.effort ∈ {high, medium,
-    low, max}`` and gates ``max`` behind an ``_is_opus_4_6_model`` check
-    that only matches the substring ``opus-4-6`` / ``opus_4_6``. Result:
-
-    * ``xhigh`` — valid on Anthropic's real API for Claude 4.7 — is
-      rejected pre-flight with "Invalid effort value: xhigh".
-    * ``max`` on Opus 4.7 is rejected with "effort='max' is only supported
-      by Claude Opus 4.6", even though Opus 4.7 accepts it in practice.
-
-    We don't want to maintain a parallel model table, so we let the
-    Anthropic API itself be the validator: widen ``_is_opus_4_6_model``
-    to also match ``opus-4-7``+ families, and drop the valid-effort-set
-    check entirely. If Anthropic rejects an effort level, we see a 400
-    and the cascade walks down — exactly the behavior we want for any
-    future model family.
-
-    Removable once litellm ships 1.83.8-stable (which merges PR #25867,
-    "Litellm day 0 opus 4.7 support") — see commit 0868a82 on their main
-    branch. Until then, this one-time patch is the escape hatch.
-    """
-    try:
-        from litellm.llms.anthropic.chat import transformation as _t
-    except Exception:
-        return
-
-    cfg = getattr(_t, "AnthropicConfig", None)
-    if cfg is None:
-        return
-
-    original = getattr(cfg, "_is_opus_4_6_model", None)
-    if original is None or getattr(original, "_hf_agent_patched", False):
-        return
-
-    def _widened(model: str) -> bool:
-        m = model.lower()
-        # Original 4.6 match plus any future Opus >= 4.6. We only need this
-        # to return True for families where "max" / "xhigh" are acceptable
-        # at the API; the cascade handles the case when they're not.
-        return any(
-            v in m for v in (
-                "opus-4-6", "opus_4_6", "opus-4.6", "opus_4.6",
-                "opus-4-7", "opus_4_7", "opus-4.7", "opus_4.7",
-            )
-        )
-
-    _widened._hf_agent_patched = True  # type: ignore[attr-defined]
-    cfg._is_opus_4_6_model = staticmethod(_widened)
-
-
-_patch_litellm_effort_validation()
-
-
-# Effort levels accepted on the wire.
-#   Anthropic (4.6+):  low | medium | high | xhigh | max   (output_config.effort)
-#   OpenAI direct:     minimal | low | medium | high | xhigh (reasoning_effort top-level)
-#   HF router:         low | medium | high                 (extra_body.reasoning_effort)
-#
-# We validate *shape* here and let the probe cascade walk down on rejection;
-# we deliberately do NOT maintain a per-model capability table.
-_ANTHROPIC_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
-_OPENAI_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
-_HF_EFFORTS = {"low", "medium", "high"}
-
-
-class UnsupportedEffortError(ValueError):
-    """The requested effort isn't valid for this provider's API surface.
-
-    Raised synchronously before any network call so the probe cascade can
-    skip levels the provider can't accept (e.g. ``max`` on HF router).
-    """
-
-
 def _custom_inference_config(
     model_name: str,
 ) -> tuple[str, str, str] | None:
@@ -214,13 +135,18 @@ def _custom_inference_config(
     ``(api_base, api_key, base_model_id)``; otherwise ``None``.
     """
     _load_inference_dotenv()
-    custom_base = (os.environ.get("CUSTOM_INFERENCE_API_BASE") or "").strip().rstrip(
-        "/"
+    custom_base = (
+        (os.environ.get("CUSTOM_INFERENCE_API_BASE") or "").strip().rstrip("/")
     )
     raw_key = (os.environ.get("CUSTOM_INFERENCE_API_KEY") or "").strip()
     # Avoid "Bearer …" duplicated by LiteLLM; strip quotes / BOM from .env pastes
     custom_key = (
-        raw_key.removeprefix("Bearer ").strip().strip('"').strip("'").strip().lstrip("\ufeff")
+        raw_key.removeprefix("Bearer ")
+        .strip()
+        .strip('"')
+        .strip("'")
+        .strip()
+        .lstrip("\ufeff")
     )
     if not (custom_base and custom_key):
         return None

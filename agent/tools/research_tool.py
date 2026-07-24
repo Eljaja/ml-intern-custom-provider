@@ -16,7 +16,7 @@ from litellm import Message, acompletion
 
 from agent.core import telemetry
 from agent.core.doom_loop import check_for_doom_loop
-from agent.core.llm_params import _resolve_llm_params, use_custom_inference_openai_key_env
+from agent.core.llm_params import _resolve_llm_params
 from agent.core.prompt_caching import with_prompt_caching
 from agent.core.session import Event
 

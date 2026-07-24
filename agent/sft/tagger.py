@@ -57,9 +57,18 @@ _MULTI_GPU_MARKERS = ("x2", "x4", "x8")
 # Tool names that don't touch training/inference or sandbox. If a session
 # only used these, we tag it research_only.
 _RESEARCH_ONLY_TOOLS = {
-    "research", "github_find_examples", "github_read_file", "github_list_repos",
-    "hf_papers", "explore_hf_docs", "fetch_hf_docs", "hub_repo_details",
-    "plan", "hf_inspect_dataset", "web_search", "archive_search",
+    "research",
+    "github_find_examples",
+    "github_read_file",
+    "github_list_repos",
+    "hf_papers",
+    "explore_hf_docs",
+    "fetch_hf_docs",
+    "hub_repo_details",
+    "plan",
+    "hf_inspect_dataset",
+    "web_search",
+    "archive_search",
 }
 
 # Tool names that signal data manipulation workflows.

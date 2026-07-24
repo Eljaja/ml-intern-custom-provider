@@ -496,10 +496,7 @@ async def event_listener(
 
                 # If yolo mode is active, auto-approve everything except
                 # scheduled HF jobs, whose recurring cost stays manual.
-                if (
-                    config
-                    and config.yolo_mode
-                ):
+                if config and config.yolo_mode:
                     approvals = [
                         {
                             "tool_call_id": t.get("tool_call_id", ""),
@@ -1116,10 +1113,9 @@ async def main(model: str | None = None, sandbox_tools: bool = False):
             )
         elif is_local_model_id(config.model_name) and local_mode:
             pass
-        elif (
-            (os.environ.get("CUSTOM_INFERENCE_API_BASE") or "").strip()
-            and (os.environ.get("CUSTOM_INFERENCE_API_KEY") or "").strip()
-        ):
+        elif (os.environ.get("CUSTOM_INFERENCE_API_BASE") or "").strip() and (
+            os.environ.get("CUSTOM_INFERENCE_API_KEY") or ""
+        ).strip():
             print(
                 f"CUSTOM_INFERENCE_* is set but model_name={config.model_name!r} does not "
                 "match CUSTOM_INFERENCE_MODEL (or huggingface/ prefix with :tag). "
@@ -1524,9 +1520,7 @@ async def headless_main(
                     "tool_call_id": t.get("tool_call_id", ""),
                     "approved": not False,
                     "feedback": (
-                        "Scheduled HF jobs require manual approval."
-                        if False
-                        else None
+                        "Scheduled HF jobs require manual approval." if False else None
                     ),
                 }
                 for t in tools_data

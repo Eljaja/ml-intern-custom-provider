@@ -574,9 +574,7 @@ SANDBOX_CREATE_TOOL_SPEC = {
             "hardware": {
                 "type": "string",
                 "enum": [e.value for e in SpaceHardware],
-                "description": (
-                    "Hardware tier for the sandbox (default: cpu-basic)"
-                ),
+                "description": ("Hardware tier for the sandbox (default: cpu-basic)"),
             },
             "trackio_space_id": {
                 "type": "string",

@@ -1,5 +1,3 @@
-import pytest
-
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -12,12 +10,8 @@ def test_sandbox_create_requires_approval():
     config = SimpleNamespace(yolo_mode=False)
 
     assert _needs_approval("sandbox_create", {}, config) is True
-    assert (
-        _needs_approval("sandbox_create", {"hardware": "cpu-basic"}, config) is True
-    )
-    assert (
-        _needs_approval("sandbox_create", {"hardware": "t4-small"}, config) is True
-    )
+    assert _needs_approval("sandbox_create", {"hardware": "cpu-basic"}, config) is True
+    assert _needs_approval("sandbox_create", {"hardware": "t4-small"}, config) is True
 
 
 def test_prompt_and_tool_specs_use_explicit_sandbox_workflow():
@@ -26,9 +20,7 @@ def test_prompt_and_tool_specs_use_explicit_sandbox_workflow():
 
     assert "sandbox_create → install deps" in prompt
     assert "cpu-basic sandbox is already available" not in prompt
-    assert "started automatically for normal CPU work" not in tool_specs.get(
-        "bash", ""
-    )
+    assert "started automatically for normal CPU work" not in tool_specs.get("bash", "")
     assert "started automatically" not in tool_specs.get("sandbox_create", "")
 
 

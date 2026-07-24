@@ -101,7 +101,13 @@ def test_sandbox_gpu_tags_from_create():
 def test_tool_output_oom_tag():
     events = [
         _ev("tool_call", {"tool": "bash", "arguments": {}}),
-        _ev("tool_output", {"success": False, "output": "RuntimeError: CUDA out of memory. Tried to allocate..."}),
+        _ev(
+            "tool_output",
+            {
+                "success": False,
+                "output": "RuntimeError: CUDA out of memory. Tried to allocate...",
+            },
+        ),
     ]
     tags = tag_session(_traj(events))
     assert "compute:oom" in tags
@@ -109,7 +115,10 @@ def test_tool_output_oom_tag():
 
 def test_sandbox_tags():
     events = [
-        _ev("sandbox_create", {"hardware": "t4-small", "sandbox_id": "s1", "create_latency_s": 5}),
+        _ev(
+            "sandbox_create",
+            {"hardware": "t4-small", "sandbox_id": "s1", "create_latency_s": 5},
+        ),
         _ev("sandbox_destroy", {"sandbox_id": "s1", "lifetime_s": 3600}),
     ]
     tags = tag_session(_traj(events))
@@ -131,7 +140,9 @@ def test_sandbox_cpu_short():
 def test_feedback_tags():
     up_only = _traj(events=[_ev("feedback", {"rating": "up"})])
     down_only = _traj(events=[_ev("feedback", {"rating": "down"})])
-    mixed = _traj(events=[_ev("feedback", {"rating": "up"}), _ev("feedback", {"rating": "down"})])
+    mixed = _traj(
+        events=[_ev("feedback", {"rating": "up"}), _ev("feedback", {"rating": "down"})]
+    )
     none = _traj()
     assert "feedback:up" in tag_session(up_only)
     assert "feedback:down" in tag_session(down_only)
@@ -141,9 +152,15 @@ def test_feedback_tags():
 
 def test_task_training():
     events = [
-        _ev("tool_call", {"tool": "bash", "arguments": {
-            "command": "from trl import SFTTrainer\ntrainer = SFTTrainer(...)"
-        }}),
+        _ev(
+            "tool_call",
+            {
+                "tool": "bash",
+                "arguments": {
+                    "command": "from trl import SFTTrainer\ntrainer = SFTTrainer(...)"
+                },
+            },
+        ),
         _ev("sandbox_create", {"hardware": "cpu-basic"}),
     ]
     assert "task:training" in tag_session(_traj(events))
