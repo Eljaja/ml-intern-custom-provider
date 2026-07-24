@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -13,6 +17,15 @@ from typing import Any
 import yaml
 
 from agent.core.redact import scrub_string
+
+logger = logging.getLogger(__name__)
+
+# A skill is a procedure, not a knowledge base. Bodies are loaded whole by
+# skill_view, and every enabled skill's description rides in the system prompt on
+# every request, so both need a ceiling — the writer is an LLM with no notion of
+# how much context it is spending.
+MAX_SKILL_CONTENT_CHARS = 20_000
+MAX_INDEXED_SKILLS = 40
 
 _SKILL_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,80}$")
 _SAFE_USER_RE = re.compile(r"[^a-zA-Z0-9_.@-]+")
@@ -189,6 +202,15 @@ def _skill_path(user_id: str | None, name: str) -> Path:
     return _skill_dir(user_id, name) / "SKILL.md"
 
 
+def _reject_oversized(name: str, content: str) -> None:
+    if len(content) > MAX_SKILL_CONTENT_CHARS:
+        raise SkillError(
+            f"Skill '{name}' body is {len(content)} characters; the limit is "
+            f"{MAX_SKILL_CONTENT_CHARS}. Keep skills procedural — link to or "
+            "re-derive bulk reference material instead of pasting it."
+        )
+
+
 def _redact_secrets(text: str) -> str:
     """Scrub secrets before a skill is written to disk.
 
@@ -250,6 +272,30 @@ def _skill_markdown(skill: Skill) -> str:
     return f"{_FRONTMATTER_DELIM}\n{frontmatter}\n{_FRONTMATTER_DELIM}\n\n{body}\n"
 
 
+_LOCKS_GUARD = threading.Lock()
+_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+
+
+@contextmanager
+def _skill_lock(user_id: str | None, name: str) -> Iterator[None]:
+    """Serialise read-modify-write on one skill file.
+
+    ``_atomic_write`` keeps a reader from seeing a torn file, but it does not stop
+    two concurrent updates from both reading the old state and the second write
+    discarding the first — e.g. a ``skill_view`` bumping use_count while the API
+    toggles ``enabled``.
+
+    Process-local only. Sufficient for the single-uvicorn deployment in
+    docker-compose.yaml; a multi-process setup would need an OS file lock, which
+    is not portable to Windows via fcntl.
+    """
+    key = (safe_user_id(user_id), name)
+    with _LOCKS_GUARD:
+        lock = _LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        yield
+
+
 def _atomic_write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -273,12 +319,38 @@ def list_skills(user_id: str | None, *, enabled_only: bool = False) -> list[Skil
     for skill_file in sorted(user_dir.glob("*/SKILL.md")):
         try:
             skill = _parse_skill_markdown(skill_file)
-        except Exception:
+        except Exception as e:
+            # A malformed skill used to vanish from the UI with no trace, which
+            # is indistinguishable from "the agent never saved it".
+            logger.warning("Skipping unreadable skill %s: %s", skill_file, e)
             continue
         if enabled_only and not skill.enabled:
             continue
         skills.append(skill)
     return skills
+
+
+def delete_skill(user_id: str | None, name: str) -> bool:
+    """Remove a skill and its directory. Returns False if it wasn't there.
+
+    Skills are written automatically by the post-turn reflection, so without a
+    delete there is no way to undo a bad one — only to disable it, leaving it on
+    disk forever.
+    """
+    skill_name = validate_skill_name(name)
+    with _skill_lock(user_id, skill_name):
+        path = _skill_path(user_id, skill_name)
+        if not path.exists():
+            return False
+        path.unlink()
+        skill_dir = path.parent
+        try:
+            next(skill_dir.iterdir())
+        except StopIteration:
+            skill_dir.rmdir()
+        except OSError:
+            pass
+        return True
 
 
 def get_skill(
@@ -303,24 +375,33 @@ def upsert_skill(
     enabled: bool | None = None,
 ) -> Skill:
     skill_name = validate_skill_name(name)
-    existing = get_skill(user_id, skill_name)
-    now = utc_now_iso()
-    enabled_value = existing.enabled if enabled is None and existing else bool(enabled)
-    if enabled is None and existing is None:
-        enabled_value = True
+    body = _redact_secrets(content or "")
+    _reject_oversized(skill_name, body)
+    summary = (description or "").strip() or "No description provided."
 
-    skill = Skill(
-        name=skill_name,
-        description=(description or "").strip() or "No description provided.",
-        content=_redact_secrets(content or ""),
-        enabled=enabled_value,
-        created_by=existing.created_by if existing else created_by,
-        created_at=existing.created_at if existing else now,
-        updated_at=now,
-        last_used_at=existing.last_used_at if existing else None,
-        use_count=existing.use_count if existing else 0,
-    )
-    _atomic_write(_skill_path(user_id, skill_name), _skill_markdown(skill))
+    with _skill_lock(user_id, skill_name):
+        existing = get_skill(user_id, skill_name)
+        now = utc_now_iso()
+
+        if existing is None:
+            skill = Skill(
+                name=skill_name,
+                description=summary,
+                content=body,
+                enabled=True if enabled is None else bool(enabled),
+                created_by=created_by,
+                created_at=now,
+                updated_at=now,
+            )
+        else:
+            skill = replace(
+                existing,
+                description=summary,
+                content=body,
+                enabled=existing.enabled if enabled is None else bool(enabled),
+                updated_at=now,
+            )
+        _atomic_write(_skill_path(user_id, skill_name), _skill_markdown(skill))
     return skill
 
 
@@ -332,65 +413,45 @@ def patch_skill(
     new_string: str,
 ) -> Skill:
     skill_name = validate_skill_name(name)
-    existing = get_skill(user_id, skill_name)
-    if existing is None:
-        raise SkillError(f"Skill '{skill_name}' does not exist.")
     if not old_string:
         raise SkillError("old_string is required for patch.")
-    if existing.content.count(old_string) != 1:
-        raise SkillError("old_string must match exactly one location in the skill.")
-    content = existing.content.replace(old_string, _redact_secrets(new_string), 1)
-    updated = Skill(
-        name=existing.name,
-        description=existing.description,
-        content=content,
-        enabled=existing.enabled,
-        created_by=existing.created_by,
-        created_at=existing.created_at,
-        updated_at=utc_now_iso(),
-        last_used_at=existing.last_used_at,
-        use_count=existing.use_count,
-    )
-    _atomic_write(_skill_path(user_id, skill_name), _skill_markdown(updated))
+
+    with _skill_lock(user_id, skill_name):
+        existing = get_skill(user_id, skill_name)
+        if existing is None:
+            raise SkillError(f"Skill '{skill_name}' does not exist.")
+        if existing.content.count(old_string) != 1:
+            raise SkillError("old_string must match exactly one location in the skill.")
+        content = existing.content.replace(old_string, _redact_secrets(new_string), 1)
+        _reject_oversized(skill_name, content)
+        updated = replace(existing, content=content, updated_at=utc_now_iso())
+        _atomic_write(_skill_path(user_id, skill_name), _skill_markdown(updated))
     return updated
 
 
 def set_skill_enabled(user_id: str | None, name: str, enabled: bool) -> Skill:
     skill_name = validate_skill_name(name)
-    existing = get_skill(user_id, skill_name)
-    if existing is None:
-        raise SkillError(f"Skill '{skill_name}' does not exist.")
-    updated = Skill(
-        name=existing.name,
-        description=existing.description,
-        content=existing.content,
-        enabled=enabled,
-        created_by=existing.created_by,
-        created_at=existing.created_at,
-        updated_at=utc_now_iso(),
-        last_used_at=existing.last_used_at,
-        use_count=existing.use_count,
-    )
-    _atomic_write(_skill_path(user_id, skill_name), _skill_markdown(updated))
+    with _skill_lock(user_id, skill_name):
+        existing = get_skill(user_id, skill_name)
+        if existing is None:
+            raise SkillError(f"Skill '{skill_name}' does not exist.")
+        updated = replace(existing, enabled=enabled, updated_at=utc_now_iso())
+        _atomic_write(_skill_path(user_id, skill_name), _skill_markdown(updated))
     return updated
 
 
 def record_skill_used(user_id: str | None, name: str) -> Skill | None:
-    existing = get_skill(user_id, name)
-    if existing is None:
-        return None
-    updated = Skill(
-        name=existing.name,
-        description=existing.description,
-        content=existing.content,
-        enabled=existing.enabled,
-        created_by=existing.created_by,
-        created_at=existing.created_at,
-        updated_at=existing.updated_at,
-        last_used_at=utc_now_iso(),
-        use_count=existing.use_count + 1,
-    )
-    _atomic_write(_skill_path(user_id, existing.name), _skill_markdown(updated))
+    skill_name = validate_skill_name(name)
+    with _skill_lock(user_id, skill_name):
+        existing = get_skill(user_id, skill_name)
+        if existing is None:
+            return None
+        updated = replace(
+            existing,
+            last_used_at=utc_now_iso(),
+            use_count=existing.use_count + 1,
+        )
+        _atomic_write(_skill_path(user_id, existing.name), _skill_markdown(updated))
     return updated
 
 
@@ -399,10 +460,28 @@ def enabled_skill_summaries(user_id: str | None) -> list[dict[str, Any]]:
 
 
 def format_skill_index(user_id: str | None) -> str:
-    summaries = enabled_skill_summaries(user_id)
-    if not summaries:
+    """Render the enabled-skill index that goes into the system prompt.
+
+    Capped at :data:`MAX_INDEXED_SKILLS`, most recently used first. This text is
+    part of every request for the whole session, and the reflection loop adds
+    skills on its own, so an uncapped list is a prompt that silently grows
+    without anyone deciding to grow it.
+    """
+    skills = list_skills(user_id, enabled_only=True)
+    if not skills:
         return "No enabled skills are currently available."
-    lines = []
-    for item in summaries:
-        lines.append(f"- {item['name']}: {item['description']}")
+
+    ordered = sorted(
+        skills,
+        key=lambda s: (s.last_used_at or "", s.use_count),
+        reverse=True,
+    )
+    shown = ordered[:MAX_INDEXED_SKILLS]
+    lines = [f"- {s.name}: {s.description}" for s in shown]
+    hidden = len(ordered) - len(shown)
+    if hidden:
+        lines.append(
+            f"- (+{hidden} more enabled skills not listed; call skills_list to "
+            "see all of them)"
+        )
     return "\n".join(lines)

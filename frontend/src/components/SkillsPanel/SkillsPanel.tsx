@@ -13,7 +13,9 @@ import {
 } from '@mui/material';
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import CloseIcon from '@mui/icons-material/Close';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import { apiFetch } from '@/utils/api';
+import { useSkillsStore } from '@/store/skillsStore';
 import type { SkillDetail, SkillSummary } from '@/types/agent';
 
 export default function SkillsPanel() {
@@ -39,15 +41,17 @@ export default function SkillsPanel() {
     }
   }, []);
 
+  const skillsRevision = useSkillsStore((s) => s.revision);
+
   useEffect(() => {
     void loadSkills();
-    const onSkillsUpdated = () => void loadSkills();
-    window.addEventListener('ml-intern:skills-updated', onSkillsUpdated);
-    return () => window.removeEventListener('ml-intern:skills-updated', onSkillsUpdated);
-  }, [loadSkills]);
+  }, [loadSkills, skillsRevision]);
 
   const toggleSkill = useCallback(async (skill: SkillSummary, enabled: boolean) => {
     setUpdating((prev) => ({ ...prev, [skill.name]: true }));
+    // Clear any previous failure, so a successful retry doesn't leave a stale
+    // banner sitting above the list.
+    setError(null);
     try {
       const response = await apiFetch(`/api/skills/${encodeURIComponent(skill.name)}`, {
         method: 'PATCH',
@@ -66,6 +70,33 @@ export default function SkillsPanel() {
       setError('Failed to update skill.');
     } finally {
       setUpdating((prev) => ({ ...prev, [skill.name]: false }));
+    }
+  }, []);
+
+  const deleteSkill = useCallback(async (skill: SkillSummary) => {
+    // Skills are written automatically by the post-turn reflection, so this is a
+    // routine cleanup action rather than a rare destructive one — but it is still
+    // irreversible, hence the confirm.
+    if (!window.confirm(`Delete the skill "${skill.name}"? This cannot be undone.`)) {
+      return;
+    }
+    setUpdating((prev) => ({ ...prev, [skill.name]: true }));
+    setError(null);
+    try {
+      const response = await apiFetch(`/api/skills/${encodeURIComponent(skill.name)}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) throw new Error(await response.text());
+      setSkills((current) => current.filter((item) => item.name !== skill.name));
+      setDetail((current) => (current?.name === skill.name ? null : current));
+    } catch {
+      setError('Failed to delete skill.');
+    } finally {
+      setUpdating((prev) => {
+        const next = { ...prev };
+        delete next[skill.name];
+        return next;
+      });
     }
   }, []);
 
@@ -120,7 +151,18 @@ export default function SkillsPanel() {
           {skills.map((skill) => (
             <Box
               key={skill.name}
+              // role/tabIndex/onKeyDown: this row opens a dialog, so it has to be
+              // reachable without a mouse.
+              role="button"
+              tabIndex={0}
+              aria-label={`Open skill ${skill.name}`}
               onClick={() => void openDetail(skill)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  void openDetail(skill);
+                }
+              }}
               sx={{
                 display: 'flex',
                 alignItems: 'center',
@@ -129,6 +171,10 @@ export default function SkillsPanel() {
                 borderRadius: '9px',
                 cursor: 'pointer',
                 '&:hover': { bgcolor: 'var(--hover-bg)' },
+                '&:focus-visible': {
+                  outline: '2px solid var(--accent, #6c8cff)',
+                  outlineOffset: 1,
+                },
               }}
             >
               <Box sx={{ flex: 1, minWidth: 0 }}>
@@ -169,6 +215,23 @@ export default function SkillsPanel() {
                 onChange={(event) => void toggleSkill(skill, event.target.checked)}
                 inputProps={{ 'aria-label': `Enable ${skill.name}` }}
               />
+              <Tooltip title="Delete skill" placement="left">
+                <IconButton
+                  size="small"
+                  disabled={!!updating[skill.name]}
+                  aria-label={`Delete ${skill.name}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void deleteSkill(skill);
+                  }}
+                  sx={{
+                    color: 'var(--muted-text)',
+                    '&:hover': { color: 'var(--error, #e5484d)' },
+                  }}
+                >
+                  <DeleteOutlineIcon sx={{ fontSize: 15 }} />
+                </IconButton>
+              </Tooltip>
             </Box>
           ))}
         </Box>

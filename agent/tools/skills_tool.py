@@ -62,7 +62,10 @@ SKILL_MANAGE_TOOL_SPEC = {
             },
             "description": {
                 "type": "string",
-                "description": "Short selection summary for the skill.",
+                "description": (
+                    "Short selection summary; required for create/edit. This is "
+                    "what future sessions match against when picking a skill."
+                ),
             },
             "content": {
                 "type": "string",
@@ -124,6 +127,15 @@ async def skill_manage_handler(
             description = str(params.get("description") or "")
             if not content.strip():
                 return "Skill content is required for create/edit.", False
+            if not description.strip():
+                # The description is the only thing a future session sees when
+                # deciding whether to open a skill; defaulting it to
+                # "No description provided." makes the skill unfindable.
+                return (
+                    "A description is required — it is what future sessions "
+                    "match against when choosing a skill.",
+                    False,
+                )
             skill = skills.upsert_skill(
                 _user_id(session),
                 name=name,

@@ -19,6 +19,7 @@ import { apiFetch } from '@/utils/api';
 import { useAgentStore } from '@/store/agentStore';
 import { useSessionStore } from '@/store/sessionStore';
 import { useLayoutStore } from '@/store/layoutStore';
+import { useSkillsStore } from '@/store/skillsStore';
 import { logger } from '@/utils/logger';
 
 interface UseAgentChatOptions {
@@ -273,7 +274,7 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
       },
       onInterrupted: () => { /* no-op — handled by stop() caller */ },
       onSkillsUpdated: () => {
-        window.dispatchEvent(new CustomEvent('ml-intern:skills-updated'));
+        useSkillsStore.getState().markSkillsChanged();
       },
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps

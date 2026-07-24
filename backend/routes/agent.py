@@ -24,6 +24,7 @@ from fastapi import (
     Depends,
     HTTPException,
     Request,
+    Response,
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
@@ -731,8 +732,11 @@ async def get_user_quota(user: dict = Depends(get_current_user)) -> dict:
 @router.get("/skills", response_model=list[SkillSummary])
 async def list_skills(user: dict = Depends(get_current_user)) -> list[SkillSummary]:
     """List all local web skills belonging to the authenticated user."""
+    # to_thread: these walk the skills directory and read every SKILL.md, which
+    # would otherwise block the event loop shared with every session's SSE stream.
+    skills = await asyncio.to_thread(user_skills.list_skills, user["user_id"])
     summaries: list[SkillSummary] = []
-    for skill in user_skills.list_skills(user["user_id"]):
+    for skill in skills:
         try:
             summaries.append(SkillSummary(**skill.summary()))
         except Exception as e:
@@ -749,7 +753,7 @@ async def list_skills(user: dict = Depends(get_current_user)) -> list[SkillSumma
 async def get_skill(name: str, user: dict = Depends(get_current_user)) -> SkillDetail:
     """Fetch one local web skill belonging to the authenticated user."""
     try:
-        skill = user_skills.get_skill(user["user_id"], name)
+        skill = await asyncio.to_thread(user_skills.get_skill, user["user_id"], name)
     except user_skills.SkillError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if skill is None:
@@ -765,8 +769,11 @@ async def toggle_skill(
 ) -> SkillDetail:
     """Manually enable or disable a local web skill."""
     try:
-        skill = user_skills.set_skill_enabled(
-            user["user_id"], name, enabled=request.enabled
+        skill = await asyncio.to_thread(
+            user_skills.set_skill_enabled,
+            user["user_id"],
+            name,
+            request.enabled,
         )
     except user_skills.SkillError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -779,6 +786,31 @@ async def toggle_skill(
         refreshed,
     )
     return SkillDetail(**skill.detail())
+
+
+@router.delete("/skills/{name}", status_code=204)
+async def delete_skill(name: str, user: dict = Depends(get_current_user)) -> Response:
+    """Delete a local web skill belonging to the authenticated user.
+
+    The post-turn reflection writes skills on its own, so without this the only
+    remedy for a bad one was to disable it and leave it on disk forever.
+    """
+    try:
+        removed = await asyncio.to_thread(
+            user_skills.delete_skill, user["user_id"], name
+        )
+    except user_skills.SkillError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not removed:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    refreshed = await session_manager.refresh_user_skill_prompts(user["user_id"])
+    logger.info(
+        "Skill %s deleted for user %s; refreshed %d sessions",
+        name,
+        user.get("username") or user["user_id"],
+        refreshed,
+    )
+    return Response(status_code=204)
 
 
 @router.get("/sessions", response_model=list[SessionInfo])

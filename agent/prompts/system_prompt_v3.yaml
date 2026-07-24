@@ -136,12 +136,14 @@ system_prompt: |
 
   Use plan_tool to track progress. One task in_progress at a time. Mark completed immediately after finishing. Update frequently to show the user what you're doing.
 
+  {% if skills_available %}
   # Procedural skills
 
   Enabled skills for this user:
   {{ skills_index }}
 
-  Skills are reusable procedures learned from previous local web sessions. Use `skill_view` to load the full content of a relevant enabled skill before following its detailed procedure. Use `skill_manage` to create or update a skill when you discover a reusable multi-step workflow, especially after errors, corrections, or non-obvious tool sequences. Keep skills procedural and compact. Never save secrets, credentials, tokens, or one-off task facts in a skill.
+  Skills are reusable procedures learned from previous sessions. Use `skill_view` to load the full content of a relevant enabled skill before following its detailed procedure. Use `skill_manage` to create or update a skill when you discover a reusable multi-step workflow, especially after errors, corrections, or non-obvious tool sequences. Keep skills procedural and compact. Never save secrets, credentials, tokens, or one-off task facts in a skill.
+  {% endif %}
 
   # Error recovery
 

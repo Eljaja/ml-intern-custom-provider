@@ -185,15 +185,6 @@ def test_context_manager_includes_enabled_skill_index(tmp_path, monkeypatch):
         enabled=False,
     )
 
-    manager = ContextManager(
-        tool_specs=[],
-        hf_token=None,
-        local_mode=False,
-        user_id="user",
-    )
-    assert "enabled-skill: Visible skill" in manager.system_prompt
-    assert "disabled-skill" not in manager.system_prompt
-
     local_web_manager = ContextManager(
         tool_specs=[],
         hf_token=None,
@@ -202,6 +193,25 @@ def test_context_manager_includes_enabled_skill_index(tmp_path, monkeypatch):
     )
     assert "enabled-skill: Visible skill" in local_web_manager.system_prompt
     assert "disabled-skill" not in local_web_manager.system_prompt
+
+    # Hosted (non-local) mode registers no skills tools, so the prompt must not
+    # advertise an index the agent has no way to read.
+    hosted = ContextManager(
+        tool_specs=[],
+        hf_token=None,
+        local_mode=False,
+        user_id="user",
+    )
+    assert "enabled-skill" not in hosted.system_prompt
+    assert "Procedural skills" not in hosted.system_prompt
+
+
+def test_skills_tools_are_registered_only_in_local_mode():
+    from agent.core.tools import create_builtin_tools
+
+    skill_tools = {"skills_list", "skill_view", "skill_manage"}
+    assert skill_tools <= {t.name for t in create_builtin_tools(local_mode=True)}
+    assert not (skill_tools & {t.name for t in create_builtin_tools(local_mode=False)})
 
 
 @pytest.mark.asyncio
@@ -412,3 +422,106 @@ def test_spawn_background_task_without_a_loop_closes_the_coroutine():
     # Closed, so awaiting it now raises rather than emitting "never awaited".
     with pytest.raises(RuntimeError):
         coro.send(None)
+
+
+def test_delete_skill_removes_file_and_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv("ML_INTERN_SKILLS_DIR", str(tmp_path))
+    skills.upsert_skill("user", name="throwaway", description="d", content="body")
+    assert (tmp_path / "user" / "throwaway" / "SKILL.md").exists()
+
+    assert skills.delete_skill("user", "throwaway") is True
+    assert not (tmp_path / "user" / "throwaway").exists()
+    assert skills.get_skill("user", "throwaway") is None
+
+    assert skills.delete_skill("user", "throwaway") is False
+
+
+def test_delete_skill_rejects_traversal(tmp_path, monkeypatch):
+    monkeypatch.setenv("ML_INTERN_SKILLS_DIR", str(tmp_path))
+    with pytest.raises(skills.SkillError):
+        skills.delete_skill("user", "../../etc")
+
+
+def test_delete_skill_is_scoped_to_its_owner(tmp_path, monkeypatch):
+    monkeypatch.setenv("ML_INTERN_SKILLS_DIR", str(tmp_path))
+    skills.upsert_skill("owner", name="shared-name", description="d", content="mine")
+    assert skills.delete_skill("other", "shared-name") is False
+    assert skills.get_skill("owner", "shared-name") is not None
+
+
+def test_oversized_skill_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.setenv("ML_INTERN_SKILLS_DIR", str(tmp_path))
+    huge = "x" * (skills.MAX_SKILL_CONTENT_CHARS + 1)
+    with pytest.raises(skills.SkillError, match="limit"):
+        skills.upsert_skill("user", name="huge", description="d", content=huge)
+    assert skills.get_skill("user", "huge") is None
+
+
+def test_patch_cannot_grow_a_skill_past_the_limit(tmp_path, monkeypatch):
+    monkeypatch.setenv("ML_INTERN_SKILLS_DIR", str(tmp_path))
+    skills.upsert_skill("user", name="grow", description="d", content="SEED")
+    with pytest.raises(skills.SkillError, match="limit"):
+        skills.patch_skill(
+            "user",
+            name="grow",
+            old_string="SEED",
+            new_string="y" * (skills.MAX_SKILL_CONTENT_CHARS + 1),
+        )
+    assert skills.get_skill("user", "grow").content == "SEED"
+
+
+def test_skill_index_is_capped_and_reports_the_remainder(tmp_path, monkeypatch):
+    monkeypatch.setenv("ML_INTERN_SKILLS_DIR", str(tmp_path))
+    total = skills.MAX_INDEXED_SKILLS + 5
+    for i in range(total):
+        skills.upsert_skill("user", name=f"skill-{i:03d}", description="d", content="b")
+
+    index = skills.format_skill_index("user")
+    listed = [line for line in index.splitlines() if line.startswith("- skill-")]
+    assert len(listed) == skills.MAX_INDEXED_SKILLS
+    assert "+5 more enabled skills" in index
+
+
+def test_recently_used_skills_win_the_index_slots(tmp_path, monkeypatch):
+    monkeypatch.setenv("ML_INTERN_SKILLS_DIR", str(tmp_path))
+    monkeypatch.setattr(skills, "MAX_INDEXED_SKILLS", 2)
+    for name in ("alpha", "beta", "gamma"):
+        skills.upsert_skill("user", name=name, description="d", content="b")
+
+    skills.record_skill_used("user", "gamma")
+
+    index = skills.format_skill_index("user")
+    assert "gamma" in index
+
+
+def test_unreadable_skill_is_logged_not_silently_dropped(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv("ML_INTERN_SKILLS_DIR", str(tmp_path))
+    broken = tmp_path / "user" / "broken"
+    broken.mkdir(parents=True)
+    (broken / "SKILL.md").write_text("no frontmatter here", encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        assert skills.list_skills("user") == []
+    assert any("broken" in r.getMessage() for r in caplog.records)
+
+
+def test_concurrent_updates_do_not_lose_each_other(tmp_path, monkeypatch):
+    """record_skill_used and set_skill_enabled both read-modify-write the file."""
+    import threading
+
+    monkeypatch.setenv("ML_INTERN_SKILLS_DIR", str(tmp_path))
+    skills.upsert_skill("user", name="hot", description="d", content="b")
+
+    barrier = threading.Barrier(8)
+
+    def bump():
+        barrier.wait()
+        skills.record_skill_used("user", "hot")
+
+    threads = [threading.Thread(target=bump) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert skills.get_skill("user", "hot").use_count == 8

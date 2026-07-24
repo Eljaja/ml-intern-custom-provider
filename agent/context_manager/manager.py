@@ -268,8 +268,12 @@ class ContextManager:
         hf_user_info = _get_hf_username(hf_token)
 
         template = Template(template_str)
+        # Only in local mode, matching where create_builtin_tools registers the
+        # skills_list / skill_view / skill_manage tools. Advertising an index the
+        # agent has no tool to read from is worse than saying nothing.
         skills_index = "No enabled skills are currently available."
-        if user_id:
+        skills_available = bool(user_id and local_mode)
+        if skills_available:
             try:
                 from agent.core.skills import format_skill_index
 
@@ -279,6 +283,7 @@ class ContextManager:
         static_prompt = template.render(
             tools=tool_specs,
             num_tools=len(tool_specs),
+            skills_available=skills_available,
             skills_index=skills_index,
         )
 

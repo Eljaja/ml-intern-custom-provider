@@ -355,24 +355,6 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
             handler=plan_tool_handler,
         ),
         ToolSpec(
-            name=SKILLS_LIST_TOOL_SPEC["name"],
-            description=SKILLS_LIST_TOOL_SPEC["description"],
-            parameters=SKILLS_LIST_TOOL_SPEC["parameters"],
-            handler=skills_list_handler,
-        ),
-        ToolSpec(
-            name=SKILL_VIEW_TOOL_SPEC["name"],
-            description=SKILL_VIEW_TOOL_SPEC["description"],
-            parameters=SKILL_VIEW_TOOL_SPEC["parameters"],
-            handler=skill_view_handler,
-        ),
-        ToolSpec(
-            name=SKILL_MANAGE_TOOL_SPEC["name"],
-            description=SKILL_MANAGE_TOOL_SPEC["description"],
-            parameters=SKILL_MANAGE_TOOL_SPEC["parameters"],
-            handler=skill_manage_handler,
-        ),
-        ToolSpec(
             name=NOTIFY_TOOL_SPEC["name"],
             description=NOTIFY_TOOL_SPEC["description"],
             parameters=NOTIFY_TOOL_SPEC["parameters"],
@@ -410,6 +392,34 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
             handler=github_read_file_handler,
         ),
     ]
+
+    # Procedural skills are backed by the filesystem of the machine running the
+    # agent (ML_INTERN_SKILLS_DIR), so they only make sense where that
+    # filesystem is durable and owned by one user: the CLI and the local web
+    # backend. On the hosted, sandbox-backed deployment the store would be
+    # ephemeral and shared under the fallback "dev" namespace, so these three
+    # tool specs would be prompt weight buying nothing.
+    if local_mode:
+        tools += [
+            ToolSpec(
+                name=SKILLS_LIST_TOOL_SPEC["name"],
+                description=SKILLS_LIST_TOOL_SPEC["description"],
+                parameters=SKILLS_LIST_TOOL_SPEC["parameters"],
+                handler=skills_list_handler,
+            ),
+            ToolSpec(
+                name=SKILL_VIEW_TOOL_SPEC["name"],
+                description=SKILL_VIEW_TOOL_SPEC["description"],
+                parameters=SKILL_VIEW_TOOL_SPEC["parameters"],
+                handler=skill_view_handler,
+            ),
+            ToolSpec(
+                name=SKILL_MANAGE_TOOL_SPEC["name"],
+                description=SKILL_MANAGE_TOOL_SPEC["description"],
+                parameters=SKILL_MANAGE_TOOL_SPEC["parameters"],
+                handler=skill_manage_handler,
+            ),
+        ]
 
     # Execution: local CLI / trusted server (local_mode), optional remote sandbox, or none.
     if local_mode:
