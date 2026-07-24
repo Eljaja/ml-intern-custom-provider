@@ -29,6 +29,7 @@ from agent.core.llm_params import (
     use_custom_inference_openai_key_env,
 )
 from agent.core.prompt_caching import with_prompt_caching
+from agent.core.redact import scrub_string
 from agent.core.session import DEFAULT_SESSION_LOG_DIR, Event, OpType, Session
 from agent.core.tools import ToolRouter
 from agent.messaging.gateway import NotificationGateway
@@ -41,6 +42,14 @@ _MALFORMED_TOOL_PREFIX = "ERROR: Tool call to '"
 _MALFORMED_TOOL_SUFFIX = "' had malformed JSON arguments"
 _NO_TOOL_INCOMPLETE_PLAN_RETRY_LIMIT = 2
 _SKILL_REFLECTION_MIN_TOOL_OUTPUTS = 2
+# Reflection is a bookkeeping judgement, not the user's task. Pin it low rather
+# than inheriting Config.reasoning_effort, which defaults to "max" — a full
+# thinking budget spent deciding whether to write a note to self.
+_SKILL_REFLECTION_EFFORT = "low"
+_SKILL_REFLECTION_MAX_TOKENS = 2500
+_SKILL_REFLECTION_TIMEOUT_S = 120
+# Per message, before redaction. 10 messages x this is what gets shipped.
+_SKILL_REFLECTION_SNIPPET_CHARS = 3000
 
 
 def _unfinished_plan_items(session: Session) -> list[dict[str, str]]:
@@ -80,6 +89,12 @@ def _no_tool_incomplete_plan_prompt(items: list[dict[str, str]]) -> str:
 
 
 def _recent_messages_for_skill_reflection(session: Session, limit: int = 10) -> str:
+    """Recent turn context for the reflection prompt, with secrets scrubbed.
+
+    This ships raw tool output to the model — env dumps, git remotes with tokens
+    in the URL, pasted keys. Everything else that leaves the process runs through
+    ``agent.core.redact`` first (see session_uploader); so does this.
+    """
     snippets: list[str] = []
     for message in session.context_manager.items[-limit:]:
         role = getattr(message, "role", "unknown")
@@ -88,8 +103,36 @@ def _recent_messages_for_skill_reflection(session: Session, limit: int = 10) -> 
         if not isinstance(content, str):
             content = str(content)
         label = f"{role}:{name}" if name else str(role)
-        snippets.append(f"{label}\n{content[:3000]}")
-    return "\n\n---\n\n".join(snippets)
+        snippets.append(f"{label}\n{content[:_SKILL_REFLECTION_SNIPPET_CHARS]}")
+    return scrub_string("\n\n---\n\n".join(snippets))
+
+
+def _parse_reflection_json(raw: str) -> dict[str, Any] | None:
+    """Parse the reflection decision, tolerating markdown fences.
+
+    The system prompt says "no markdown fences", but models emit ```json anyway
+    often enough that treating it as a hard error just silently disables the
+    feature.
+    """
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1] if "\n" in text else ""
+        if text.rstrip().endswith("```"):
+            text = text.rstrip()[: -len("```")]
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        decision = json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start == -1 or end <= start:
+            return None
+        try:
+            decision = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+    return decision if isinstance(decision, dict) else None
 
 
 def _skill_reflection_tool_stats(
@@ -113,16 +156,31 @@ def _skill_reflection_tool_stats(
     return tool_outputs, used_skill_manage
 
 
+def skill_reflection_enabled(config: Any) -> bool:
+    """Whether to run the post-turn skill reflection LLM call.
+
+    Opt-out exists because this spends a second model call on every substantive
+    turn. ``Config.skill_reflection`` defaults to True to preserve behaviour.
+    """
+    return bool(getattr(config, "skill_reflection", True))
+
+
 async def _maybe_reflect_skill(
     session: Session,
     *,
     event_start_idx: int,
-    errored: bool,
 ) -> None:
-    """After a successful non-trivial turn, optionally create or patch a skill."""
-    if errored or session.pending_approval or session.is_cancelled:
+    """After a successful non-trivial turn, optionally create or patch a skill.
+
+    Runs detached from the turn (see the call site): it is bookkeeping for future
+    sessions, so the user should not wait on a second full model round trip after
+    their answer is already on screen.
+    """
+    if session.pending_approval or session.is_cancelled:
         return
     if not session.user_id:
+        return
+    if not skill_reflection_enabled(session.config):
         return
 
     tool_outputs, used_skill_manage = _skill_reflection_tool_stats(
@@ -155,8 +213,9 @@ async def _maybe_reflect_skill(
         llm_params = _resolve_llm_params(
             session.config.model_name,
             session.hf_token,
-            reasoning_effort=session.effective_effort_for(session.config.model_name),
+            reasoning_effort=_SKILL_REFLECTION_EFFORT,
         )
+        _t0 = time.monotonic()
         async with use_custom_inference_openai_key_env(
             session.config.model_name, llm_params
         ):
@@ -168,13 +227,28 @@ async def _maybe_reflect_skill(
                     },
                     {"role": "user", "content": prompt},
                 ],
-                max_completion_tokens=2500,
-                timeout=120,
+                max_completion_tokens=_SKILL_REFLECTION_MAX_TOKENS,
+                timeout=_SKILL_REFLECTION_TIMEOUT_S,
                 **llm_params,
             )
-        raw = response.choices[0].message.content or "{}"
-        decision = json.loads(raw.strip())
-        if not isinstance(decision, dict):
+        # Every other completion in the codebase is instrumented; without this
+        # the reflection spend is invisible to KPIs and to the session's
+        # total_cost_usd. See the kind list in agent/core/telemetry.py.
+        await telemetry.record_llm_call(
+            session,
+            model=session.config.model_name,
+            response=response,
+            latency_ms=int((time.monotonic() - _t0) * 1000),
+            finish_reason=getattr(response.choices[0], "finish_reason", None)
+            if response.choices
+            else None,
+            kind="skill_reflection",
+        )
+        decision = _parse_reflection_json(
+            response.choices[0].message.content if response.choices else ""
+        )
+        if decision is None:
+            logger.info("Skill reflection returned unparseable output; skipping")
             return
         action = decision.get("action")
         if action == "noop":
@@ -203,8 +277,17 @@ async def _maybe_reflect_skill(
                 data={"name": skill.name, "action": action, "enabled": skill.enabled},
             )
         )
-    except Exception as e:
-        logger.debug("Skill reflection skipped/failed: %s", e)
+        logger.info("Skill reflection %s '%s'", action, skill.name)
+    except asyncio.CancelledError:
+        raise
+    except user_skills.SkillError as e:
+        # The model proposed something invalid (bad slug, old_string that isn't
+        # a unique match). Expected often enough not to be an error.
+        logger.info("Skill reflection produced an unusable skill: %s", e)
+    except Exception:
+        # Was logger.debug, which meant "skills never appear" had no diagnostic
+        # trail at default log level.
+        logger.warning("Skill reflection failed", exc_info=True)
 
 
 def _malformed_tool_name(message: Message) -> str | None:
@@ -1810,8 +1893,13 @@ class Handlers:
             await _cleanup_on_cancel(session)
             await session.send_event(Event(event_type="interrupted"))
         elif not errored:
-            await _maybe_reflect_skill(
-                session, event_start_idx=event_start_idx, errored=errored
+            # Detached on purpose: reflection is a second full model round trip
+            # whose only output is a note for *future* sessions. Awaiting it here
+            # made every user wait for it after their answer was already
+            # rendered. Kept on the session so shutdown can await/cancel it.
+            session.spawn_background_task(
+                _maybe_reflect_skill(session, event_start_idx=event_start_idx),
+                name="skill-reflection",
             )
             await session.send_event(
                 Event(

@@ -12,19 +12,12 @@ from typing import Any
 
 import yaml
 
+from agent.core.redact import scrub_string
+
 _SKILL_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,80}$")
 _SAFE_USER_RE = re.compile(r"[^a-zA-Z0-9_.@-]+")
 _FRONTMATTER_DELIM = "---"
 _DEFAULT_SKILLS_DIR = Path.home() / ".config" / "ml-intern" / "skills"
-
-_SECRET_PATTERNS = [
-    re.compile(r"\b(hf_[A-Za-z0-9]{20,})\b"),
-    re.compile(r"\b(sk-[A-Za-z0-9_-]{20,})\b"),
-    re.compile(
-        r"(?i)\b((?:api[_-]?key|access[_-]?token|secret|password)\s*[:=]\s*)"
-        r"([^\s`'\"]{8,})"
-    ),
-]
 
 
 class SkillError(ValueError):
@@ -197,13 +190,14 @@ def _skill_path(user_id: str | None, name: str) -> Path:
 
 
 def _redact_secrets(text: str) -> str:
-    redacted = text
-    for pattern in _SECRET_PATTERNS:
-        if pattern.groups >= 2:
-            redacted = pattern.sub(r"\1[REDACTED]", redacted)
-        else:
-            redacted = pattern.sub("[REDACTED]", redacted)
-    return redacted
+    """Scrub secrets before a skill is written to disk.
+
+    Delegates to :mod:`agent.core.redact`, the scrubber already used for
+    uploaded session trajectories. This module used to carry its own weaker
+    copy of the patterns (hf_ from 20 chars instead of 30, sk- from 20 instead
+    of 40, no GitHub PAT / AWS / Bearer coverage); two copies could only drift.
+    """
+    return scrub_string(text)
 
 
 def _parse_skill_markdown(path: Path) -> Skill:

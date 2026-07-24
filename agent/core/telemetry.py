@@ -30,9 +30,11 @@ def extract_usage(response_or_chunk: Any) -> dict:
     """Flat usage dict from a litellm response or final-chunk usage object.
 
     Normalizes across providers: Anthropic exposes cache tokens as
-    ``cache_read_input_tokens`` / ``cache_creation_input_tokens``; OpenAI uses
-    ``prompt_tokens_details.cached_tokens``. Exposed under the stable keys
-    ``cache_read_tokens`` / ``cache_creation_tokens``.
+    ``cache_read_input_tokens`` / ``cache_creation_input_tokens``; OpenAI-shaped
+    responses — including CUSTOM_INFERENCE_* endpoints — put them in
+    ``prompt_tokens_details`` as ``cached_tokens`` / ``cache_write_tokens``.
+    Exposed under the stable keys ``cache_read_tokens`` /
+    ``cache_creation_tokens``.
     """
     u = getattr(response_or_chunk, "usage", None)
     if u is None and isinstance(response_or_chunk, dict):
@@ -51,14 +53,21 @@ def extract_usage(response_or_chunk: Any) -> dict:
 
     cache_read = _g("cache_read_input_tokens")
     cache_creation = _g("cache_creation_input_tokens")
+    details = _g("prompt_tokens_details", None)
+
+    def _from_details(name: str) -> int:
+        if details is None:
+            return 0
+        if isinstance(details, dict):
+            return details.get(name, 0) or 0
+        return getattr(details, name, 0) or 0
 
     if not cache_read:
-        details = _g("prompt_tokens_details", None)
-        if details is not None:
-            if isinstance(details, dict):
-                cache_read = details.get("cached_tokens", 0) or 0
-            else:
-                cache_read = getattr(details, "cached_tokens", 0) or 0
+        cache_read = _from_details("cached_tokens")
+    if not cache_creation:
+        # Was missing entirely, so cache *writes* on OpenAI-shaped responses
+        # (i.e. every CUSTOM_INFERENCE_* call) were reported as zero.
+        cache_creation = _from_details("cache_write_tokens")
 
     return {
         "prompt_tokens": int(prompt),

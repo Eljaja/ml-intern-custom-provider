@@ -144,10 +144,32 @@ class SessionManager:
 
     async def close(self) -> None:
         """Flush and close shared background resources."""
+        await self._drain_session_background_tasks()
         await self._cleanup_all_sandboxes_on_close()
         await self.messaging_gateway.close()
         if self.persistence_store is not None:
             await self.persistence_store.close()
+
+    async def _drain_session_background_tasks(self) -> None:
+        """Let detached per-session work finish before the loop goes away.
+
+        Skill reflection is dispatched off the turn (see
+        agent.core.agent_loop._maybe_reflect_skill), so without this a shutdown
+        mid-reflection would kill it with a half-written skill or an unlogged
+        llm_call event.
+        """
+        for agent_session in list(self.sessions.values()):
+            drain = getattr(agent_session.session, "drain_background_tasks", None)
+            if drain is None:
+                continue
+            try:
+                await drain()
+            except Exception as e:
+                logger.warning(
+                    "Draining background tasks for %s failed: %s",
+                    agent_session.session_id,
+                    e,
+                )
 
     def _store(self):
         if self.persistence_store is None:

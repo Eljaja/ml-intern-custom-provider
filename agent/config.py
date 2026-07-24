@@ -56,6 +56,14 @@ class Config(BaseModel):
     # ``xhigh`` or ``max`` for Anthropic 4.6 / 4.7). ``None`` = thinking off.
     # Valid values: None | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
     reasoning_effort: str | None = "max"
+
+    # Post-turn skill reflection: an extra LLM call after every substantive turn
+    # that decides whether to save a reusable procedure to the user's skill store
+    # (agent.core.agent_loop._maybe_reflect_skill). It runs detached from the turn
+    # at a pinned-low effort, but it is still a second model call per turn. Set
+    # false to switch it off; the agent can still call skill_manage explicitly.
+    skill_reflection: bool = True
+
     messaging: MessagingConfig = MessagingConfig()
 
 

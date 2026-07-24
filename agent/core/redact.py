@@ -35,9 +35,13 @@ _PATTERNS: list[tuple[re.Pattern, str]] = [
 # Env-var-like exports: we scrub the value but keep the name so callers can
 # still see which secret was referenced. Covers `KEY=value` and `KEY: value`
 # when the key looks secret-y.
+#
+# Matched by suffix rather than by an explicit allowlist. The allowlist version
+# missed every variable added after it was written — ZULIP_API_KEY, and any
+# CUSTOM_INFERENCE_API_KEY or provider key a user sets — which is exactly the
+# failure mode you don't want in a redactor.
 _SECRETY_NAMES = re.compile(
-    r"(?i)\b(HF_TOKEN|HUGGINGFACEHUB_API_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|"
-    r"GITHUB_TOKEN|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|PASSWORD|SECRET|API_KEY)"
+    r"(?i)\b([A-Z0-9_]*(?:TOKEN|API_KEY|SECRET|PASSWORD|ACCESS_KEY_ID))"
     r"\s*[:=]\s*([^\s\"']+)"
 )
 

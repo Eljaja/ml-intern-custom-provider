@@ -132,6 +132,10 @@ class Session:
         self.auto_approval_enabled: bool = False
         self.auto_approval_cost_cap_usd: float | None = None
         self.auto_approval_estimated_spend_usd: float = 0.0
+        # Strong references to detached work (skill reflection, trace appends).
+        # asyncio only holds a weak reference to a running task, so a bare
+        # create_task() can be garbage-collected mid-flight.
+        self._background_tasks: set[asyncio.Task] = set()
 
         # Session trajectory logging
         self.logged_events: list[dict] = []
@@ -181,6 +185,44 @@ class Session:
 
         HeartbeatSaver.maybe_fire(self)
 
+    def spawn_background_task(self, coro: Any, *, name: str | None = None) -> Any:
+        """Run ``coro`` detached from the current turn, keeping a strong ref.
+
+        Returns the task, or None when there is no running loop (sync CLI paths),
+        in which case ``coro`` is closed rather than left un-awaited.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            close = getattr(coro, "close", None)
+            if callable(close):
+                close()
+            return None
+
+        task = loop.create_task(coro, name=name)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
+    async def drain_background_tasks(self, timeout: float = 10.0) -> None:
+        """Await detached work, then cancel whatever is still running.
+
+        Called on shutdown so a detached skill reflection either finishes or is
+        cancelled cleanly instead of dying with the loop.
+        """
+        pending = [t for t in self._background_tasks if not t.done()]
+        if not pending:
+            return
+        done, still_pending = await asyncio.wait(pending, timeout=timeout)
+        for task in still_pending:
+            task.cancel()
+        if still_pending:
+            await asyncio.gather(*still_pending, return_exceptions=True)
+        for task in done:
+            exc = task.exception()
+            if exc is not None:
+                logger.warning("Background task %s failed: %s", task.get_name(), exc)
+
     def _schedule_trace_message(self, message: Any) -> None:
         """Best-effort append-only trace save for SFT/KPI export."""
         if self.persistence_store is None:
@@ -189,15 +231,12 @@ class Session:
             payload = message.model_dump(mode="json")
         except Exception:
             return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
         source = str(payload.get("role") or "message")
-        loop.create_task(
+        self.spawn_background_task(
             self.persistence_store.append_trace_message(
                 self.session_id, payload, source=source
-            )
+            ),
+            name="trace-append",
         )
 
     def set_notification_destinations(self, destinations: list[str]) -> None:
