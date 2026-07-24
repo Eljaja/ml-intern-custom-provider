@@ -2277,6 +2277,7 @@ async def submission_loop(
     notification_gateway: NotificationGateway | None = None,
     notification_destinations: list[str] | None = None,
     defer_turn_complete_notification: bool = False,
+    autonomous_mode: bool = False,
 ) -> None:
     """
     Main agent loop - processes submissions and dispatches to handlers.
@@ -2295,6 +2296,7 @@ async def submission_loop(
         notification_gateway=notification_gateway,
         notification_destinations=notification_destinations,
         defer_turn_complete_notification=defer_turn_complete_notification,
+        autonomous_mode=autonomous_mode,
     )
     if session_holder is not None:
         session_holder[0] = session

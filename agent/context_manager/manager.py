@@ -188,18 +188,21 @@ class ContextManager:
         hf_token: str | None = None,
         local_mode: bool = False,
         user_id: str | None = None,
+        autonomous_mode: bool = False,
     ):
         self.prompt_file_suffix = prompt_file_suffix
         self.tool_specs = tool_specs or []
         self.hf_token = hf_token
         self.local_mode = local_mode
         self.user_id = user_id
+        self.autonomous_mode = autonomous_mode
         self.system_prompt = self._load_system_prompt(
             self.tool_specs,
             prompt_file_suffix=self.prompt_file_suffix,
             hf_token=hf_token,
             local_mode=local_mode,
             user_id=user_id,
+            autonomous_mode=autonomous_mode,
         )
         # The model's real input-token ceiling (from litellm.get_model_info).
         # Compaction triggers at _COMPACT_THRESHOLD_RATIO below it — see
@@ -221,6 +224,7 @@ class ContextManager:
         hf_token: str | None = None,
         local_mode: bool | None = None,
         user_id: str | None = None,
+        autonomous_mode: bool | None = None,
     ) -> Message:
         """Re-render the system prompt and return it as a system message."""
         if tool_specs is not None:
@@ -231,6 +235,8 @@ class ContextManager:
             self.local_mode = local_mode
         if user_id is not None:
             self.user_id = user_id
+        if autonomous_mode is not None:
+            self.autonomous_mode = autonomous_mode
         self.system_prompt = self._load_system_prompt(
             self.tool_specs,
             prompt_file_suffix=getattr(
@@ -239,6 +245,7 @@ class ContextManager:
             hf_token=getattr(self, "hf_token", None),
             local_mode=getattr(self, "local_mode", False),
             user_id=getattr(self, "user_id", None),
+            autonomous_mode=getattr(self, "autonomous_mode", False),
         )
         return Message(role="system", content=self.system_prompt)
 
@@ -249,6 +256,7 @@ class ContextManager:
         hf_token: str | None = None,
         local_mode: bool = False,
         user_id: str | None = None,
+        autonomous_mode: bool = False,
     ):
         """Load and render the system prompt from YAML file with Jinja2"""
         prompt_file = Path(__file__).parent.parent / "prompts" / f"{prompt_file_suffix}"
@@ -285,6 +293,7 @@ class ContextManager:
             num_tools=len(tool_specs),
             skills_available=skills_available,
             skills_index=skills_index,
+            autonomous_mode=autonomous_mode,
         )
 
         tool_names = {

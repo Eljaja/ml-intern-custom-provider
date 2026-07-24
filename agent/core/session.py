@@ -98,11 +98,16 @@ class Session:
         user_id: str | None = None,
         hf_username: str | None = None,
         persistence_store: Any | None = None,
+        autonomous_mode: bool = False,
     ):
         self.hf_token: str | None = hf_token
         self.user_id: str | None = user_id
         self.hf_username: str | None = hf_username
         self.local_mode = local_mode
+        # No human in the loop (headless prompt / benchmark). Gates the
+        # "never stop working, never answer with text only" block of the system
+        # prompt, which is actively wrong for interactive chat.
+        self.autonomous_mode = autonomous_mode
         self.persistence_store = persistence_store
         self.tool_router = tool_router
         self.stream = stream
@@ -117,6 +122,7 @@ class Session:
             hf_token=hf_token,
             local_mode=local_mode,
             user_id=user_id,
+            autonomous_mode=autonomous_mode,
         )
         self.event_queue = event_queue
         self.session_id = session_id or str(uuid.uuid4())
@@ -486,6 +492,7 @@ class Session:
                 hf_token=self.hf_token,
                 local_mode=self.local_mode,
                 user_id=self.user_id,
+                autonomous_mode=getattr(self, "autonomous_mode", False),
             )
         except Exception as e:
             logger.warning("Failed to refresh system prompt for new chat: %s", e)

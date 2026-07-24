@@ -10,9 +10,14 @@ def _write_json(path, data):
     path.write_text(json.dumps(data), encoding="utf-8")
 
 
-def test_load_config_does_not_apply_slack_user_defaults_by_default(
-    tmp_path, monkeypatch
-):
+def test_slack_env_defaults_apply_without_include_user_defaults(tmp_path, monkeypatch):
+    """Env-configured destinations no longer depend on include_user_defaults.
+
+    They used to: Slack was applied only under that flag while Zulip was applied
+    always, so SLACK_BOT_TOKEN in .env silently did nothing for web sessions
+    (backend/session_manager.py loads the config without it). Both providers now
+    behave the same.
+    """
     config_path = tmp_path / "config.json"
     _write_json(
         config_path,
@@ -29,8 +34,78 @@ def test_load_config_does_not_apply_slack_user_defaults_by_default(
 
     config = config_module.load_config(str(config_path))
 
+    assert config.messaging.enabled
+    assert "slack.default" in config.messaging.destinations
+
+
+def test_no_messaging_env_leaves_config_untouched(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    _write_json(
+        config_path,
+        {
+            "model_name": "moonshotai/Kimi-K2.6",
+            "messaging": {"enabled": False, "destinations": {}},
+        },
+    )
+    for var in (
+        "SLACK_BOT_TOKEN",
+        "SLACK_CHANNEL_ID",
+        "SLACK_CHANNEL",
+        "ZULIP_SITE",
+        "ZULIP_BOT_EMAIL",
+        "ZULIP_EMAIL",
+        "ZULIP_API_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    config = config_module.load_config(str(config_path))
+
     assert not config.messaging.enabled
     assert config.messaging.destinations == {}
+
+
+def test_slack_and_zulip_env_defaults_coexist(tmp_path, monkeypatch):
+    """Both providers configured at once should both land as destinations."""
+    config_path = tmp_path / "config.json"
+    _write_json(config_path, {"model_name": "moonshotai/Kimi-K2.6"})
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_CHANNEL_ID", "C123")
+    monkeypatch.setenv("ZULIP_SITE", "https://chat.example.com")
+    monkeypatch.setenv("ZULIP_BOT_EMAIL", "bot@example.com")
+    monkeypatch.setenv("ZULIP_API_KEY", "zkey")
+    monkeypatch.setenv("ZULIP_STREAM", "ml-agent")
+
+    config = config_module.load_config(str(config_path))
+
+    assert set(config.messaging.destinations) == {"slack.default", "zulip.default"}
+    assert config.messaging.destinations["slack.default"].provider == "slack"
+    assert config.messaging.destinations["zulip.default"].provider == "zulip"
+
+
+def test_explicit_json_destination_wins_over_env(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    _write_json(
+        config_path,
+        {
+            "model_name": "moonshotai/Kimi-K2.6",
+            "messaging": {
+                "enabled": True,
+                "destinations": {
+                    "slack.default": {
+                        "provider": "slack",
+                        "token": "from-json",
+                        "channel": "C-json",
+                    }
+                },
+            },
+        },
+    )
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-from-env")
+    monkeypatch.setenv("SLACK_CHANNEL_ID", "C-env")
+
+    config = config_module.load_config(str(config_path))
+
+    assert config.messaging.destinations["slack.default"].token == "from-json"
 
 
 def test_load_config_applies_slack_user_defaults_from_env(tmp_path, monkeypatch):
@@ -194,3 +269,42 @@ def test_invalid_tool_runtime_is_rejected(tmp_path):
 
     with pytest.raises(ValidationError):
         config_module.load_config(str(config_path))
+
+
+def test_autonomous_prompt_section_is_gated(tmp_path, monkeypatch):
+    """The never-stop-working block is wrong for interactive chat."""
+    from agent.context_manager.manager import ContextManager
+
+    monkeypatch.setenv("ML_INTERN_SKILLS_DIR", str(tmp_path))
+
+    headless = ContextManager(tool_specs=[], autonomous_mode=True).system_prompt
+    assert "Autonomous / headless mode" in headless
+    assert "NEVER STOP WORKING" in headless
+    assert "Interactive mode" not in headless
+
+    interactive = ContextManager(tool_specs=[], autonomous_mode=False).system_prompt
+    assert "NEVER STOP WORKING" not in interactive
+    assert "Interactive mode" in interactive
+    # Regression guard: a missing template variable renders as falsey, which is
+    # how this section would silently disappear from headless runs.
+    assert "{% if" not in interactive
+
+
+def test_tool_calling_contract_is_always_present(tmp_path, monkeypatch):
+    from agent.context_manager.manager import ContextManager
+
+    monkeypatch.setenv("ML_INTERN_SKILLS_DIR", str(tmp_path))
+    for autonomous in (True, False):
+        prompt = ContextManager(tool_specs=[], autonomous_mode=autonomous).system_prompt
+        assert "Tool calling contract" in prompt
+        assert "source of truth" in prompt
+
+
+def test_headless_main_requests_autonomous_mode():
+    """agent.main.headless_main must pass the flag; nothing else sets it."""
+    import inspect
+
+    from agent import main as main_module
+
+    source = inspect.getsource(main_module.headless_main)
+    assert "autonomous_mode=True" in source

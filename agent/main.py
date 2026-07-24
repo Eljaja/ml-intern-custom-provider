@@ -1419,6 +1419,8 @@ async def headless_main(
             notification_gateway=notification_gateway,
             notification_destinations=config.messaging.default_auto_destinations(),
             defer_turn_complete_notification=True,
+            # Headless: no human to re-prompt, so the never-stop-working block applies.
+            autonomous_mode=True,
         )
     )
 

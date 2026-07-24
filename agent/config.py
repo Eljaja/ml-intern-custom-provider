@@ -1,6 +1,8 @@
 import json
 import os
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -133,99 +135,124 @@ def _env_list(name: str) -> list[str] | None:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-def apply_slack_user_defaults(raw_config: dict[str, Any]) -> dict[str, Any]:
-    """Enable a default Slack destination from user env vars, when present."""
-    if not _env_bool("ML_INTERN_SLACK_NOTIFICATIONS", True):
-        return raw_config
+@dataclass(frozen=True)
+class _EnvProvider:
+    """How one notification provider is configured from the environment."""
 
-    token = os.environ.get("SLACK_BOT_TOKEN")
-    channel = os.environ.get("SLACK_CHANNEL_ID") or os.environ.get("SLACK_CHANNEL")
-    if not token or not channel:
-        return raw_config
+    name: str
+    enable_env: str
+    destination_env: str
+    default_destination: str
+    auto_events_env: str
+    default_auto_events: list[str]
+    build: Callable[[], dict[str, Any] | None]
 
-    config = dict(raw_config)
-    messaging = dict(config.get("messaging") or {})
-    destinations = dict(messaging.get("destinations") or {})
-    destination_name = (
-        os.environ.get("ML_INTERN_SLACK_DESTINATION") or SLACK_DEFAULT_DESTINATION
+
+def _slack_destination_from_env() -> dict[str, Any] | None:
+    token = (os.environ.get("SLACK_BOT_TOKEN") or "").strip()
+    channel = (
+        os.environ.get("SLACK_CHANNEL_ID") or os.environ.get("SLACK_CHANNEL") or ""
     ).strip()
-
-    if destination_name not in destinations:
-        destinations[destination_name] = {
-            "provider": "slack",
-            "token": token,
-            "channel": channel,
-            "allow_agent_tool": _env_bool("ML_INTERN_SLACK_ALLOW_AGENT_TOOL", True),
-            "allow_auto_events": _env_bool("ML_INTERN_SLACK_ALLOW_AUTO_EVENTS", True),
-        }
-
-    auto_events = _env_list("ML_INTERN_SLACK_AUTO_EVENTS")
-    if auto_events is not None:
-        messaging["auto_event_types"] = auto_events
-    elif "auto_event_types" not in messaging:
-        messaging["auto_event_types"] = SLACK_DEFAULT_AUTO_EVENT_TYPES
-
-    messaging["enabled"] = True
-    messaging["destinations"] = destinations
-    config["messaging"] = messaging
-    return config
+    if not token or not channel:
+        return None
+    return {
+        "provider": "slack",
+        "token": token,
+        "channel": channel,
+        "allow_agent_tool": _env_bool("ML_INTERN_SLACK_ALLOW_AGENT_TOOL", True),
+        "allow_auto_events": _env_bool("ML_INTERN_SLACK_ALLOW_AUTO_EVENTS", True),
+    }
 
 
-def apply_zulip_user_defaults(raw_config: dict[str, Any]) -> dict[str, Any]:
-    """Enable a default Zulip destination from env vars, when present."""
-    if not _env_bool("ML_INTERN_ZULIP_NOTIFICATIONS", True):
-        return raw_config
-
+def _zulip_destination_from_env() -> dict[str, Any] | None:
     site = (os.environ.get("ZULIP_SITE") or "").strip().rstrip("/")
     email = (
         os.environ.get("ZULIP_BOT_EMAIL") or os.environ.get("ZULIP_EMAIL") or ""
     ).strip()
     api_key = (os.environ.get("ZULIP_API_KEY") or "").strip()
     if not site or not email or not api_key:
-        return raw_config
+        return None
 
     message_type = (os.environ.get("ZULIP_MESSAGE_TYPE") or "stream").strip().lower()
     if message_type not in {"stream", "private"}:
         message_type = "stream"
 
     stream = (os.environ.get("ZULIP_STREAM") or "").strip() or None
-    topic = (os.environ.get("ZULIP_TOPIC") or ZULIP_DEFAULT_TOPIC).strip()
     to = (os.environ.get("ZULIP_TO") or "").strip() or None
-
     if message_type == "stream" and not stream:
-        return raw_config
+        return None
     if message_type == "private" and not to:
+        return None
+
+    destination: dict[str, Any] = {
+        "provider": "zulip",
+        "site": site,
+        "email": email,
+        "api_key": api_key,
+        "message_type": message_type,
+        "topic": (os.environ.get("ZULIP_TOPIC") or ZULIP_DEFAULT_TOPIC).strip(),
+        "allow_agent_tool": _env_bool("ML_INTERN_ZULIP_ALLOW_AGENT_TOOL", True),
+        "allow_auto_events": _env_bool("ML_INTERN_ZULIP_ALLOW_AUTO_EVENTS", True),
+    }
+    if message_type == "stream":
+        destination["stream"] = stream
+    else:
+        destination["to"] = to
+    return destination
+
+
+# One entry per notification provider configurable from the environment. Adding a
+# provider here is all it takes; the two implementations used to be near-identical
+# 40-line copies that had already drifted apart in which code path applied them.
+_ENV_PROVIDERS: tuple[_EnvProvider, ...] = (
+    _EnvProvider(
+        name="slack",
+        enable_env="ML_INTERN_SLACK_NOTIFICATIONS",
+        destination_env="ML_INTERN_SLACK_DESTINATION",
+        default_destination=SLACK_DEFAULT_DESTINATION,
+        auto_events_env="ML_INTERN_SLACK_AUTO_EVENTS",
+        default_auto_events=SLACK_DEFAULT_AUTO_EVENT_TYPES,
+        build=_slack_destination_from_env,
+    ),
+    _EnvProvider(
+        name="zulip",
+        enable_env="ML_INTERN_ZULIP_NOTIFICATIONS",
+        destination_env="ML_INTERN_ZULIP_DESTINATION",
+        default_destination=ZULIP_DEFAULT_DESTINATION,
+        auto_events_env="ML_INTERN_ZULIP_AUTO_EVENTS",
+        default_auto_events=ZULIP_DEFAULT_AUTO_EVENT_TYPES,
+        build=_zulip_destination_from_env,
+    ),
+)
+
+
+def _apply_env_provider(
+    raw_config: dict[str, Any], provider: _EnvProvider
+) -> dict[str, Any]:
+    """Merge one provider's env-configured destination into ``raw_config``."""
+    if not _env_bool(provider.enable_env, True):
+        return raw_config
+
+    destination = provider.build()
+    if destination is None:
         return raw_config
 
     config = dict(raw_config)
     messaging = dict(config.get("messaging") or {})
     destinations = dict(messaging.get("destinations") or {})
-    destination_name = (
-        os.environ.get("ML_INTERN_ZULIP_DESTINATION") or ZULIP_DEFAULT_DESTINATION
+
+    name = (
+        os.environ.get(provider.destination_env) or provider.default_destination
     ).strip()
+    # An explicit entry in the JSON config wins over env autoconfiguration.
+    if name not in destinations:
+        destinations[name] = destination
 
-    if destination_name not in destinations:
-        destination: dict[str, Any] = {
-            "provider": "zulip",
-            "site": site,
-            "email": email,
-            "api_key": api_key,
-            "message_type": message_type,
-            "topic": topic,
-            "allow_agent_tool": _env_bool("ML_INTERN_ZULIP_ALLOW_AGENT_TOOL", True),
-            "allow_auto_events": _env_bool("ML_INTERN_ZULIP_ALLOW_AUTO_EVENTS", True),
-        }
-        if message_type == "stream":
-            destination["stream"] = stream
-        else:
-            destination["to"] = to
-        destinations[destination_name] = destination
-
-    auto_events = _env_list("ML_INTERN_ZULIP_AUTO_EVENTS")
+    auto_events = _env_list(provider.auto_events_env)
     if auto_events is not None:
         messaging["auto_event_types"] = auto_events
     elif "auto_event_types" not in messaging:
-        messaging["auto_event_types"] = ZULIP_DEFAULT_AUTO_EVENT_TYPES
+        messaging["auto_event_types"] = provider.default_auto_events
 
     messaging["enabled"] = True
     messaging["destinations"] = destinations
@@ -234,8 +261,26 @@ def apply_zulip_user_defaults(raw_config: dict[str, Any]) -> dict[str, Any]:
 
 
 def apply_messaging_env_defaults(raw_config: dict[str, Any]) -> dict[str, Any]:
-    """Apply Zulip destinations from environment variables (.env)."""
-    return apply_zulip_user_defaults(raw_config)
+    """Apply every env-configured notification destination (.env).
+
+    Called unconditionally from ``load_config``, i.e. for the web backend too.
+    Slack used to be applied only under ``include_user_defaults`` while Zulip was
+    applied always, so ``SLACK_BOT_TOKEN`` in .env silently did nothing in web
+    sessions (backend/session_manager.py loads the config without that flag).
+    """
+    for provider in _ENV_PROVIDERS:
+        raw_config = _apply_env_provider(raw_config, provider)
+    return raw_config
+
+
+def apply_slack_user_defaults(raw_config: dict[str, Any]) -> dict[str, Any]:
+    """Backwards-compatible alias kept for existing imports and tests."""
+    return _apply_env_provider(raw_config, _ENV_PROVIDERS[0])
+
+
+def apply_zulip_user_defaults(raw_config: dict[str, Any]) -> dict[str, Any]:
+    """Backwards-compatible alias kept for existing imports and tests."""
+    return _apply_env_provider(raw_config, _ENV_PROVIDERS[1])
 
 
 def substitute_env_vars(obj: Any) -> Any:
@@ -293,7 +338,6 @@ def load_config(
     raw_config = _load_json_config(Path(config_path))
     if include_user_defaults:
         raw_config = _deep_merge_config(raw_config, _load_user_config())
-        raw_config = apply_slack_user_defaults(raw_config)
     raw_config = apply_messaging_env_defaults(raw_config)
 
     config_with_env = substitute_env_vars(raw_config)

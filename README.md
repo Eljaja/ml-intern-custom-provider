@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-    <a href="https://github.com/huggingface/ml-intern/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
+    <a href="https://github.com/Eljaja/ml-intern-custom-provider/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
     <a href="https://smolagents-ml-intern.hf.space/"><img alt="Website" src="https://img.shields.io/website/https/smolagents-ml-intern.hf.space.svg?down_color=red&down_message=offline&up_message=online"></a>
 </p>
 
@@ -11,13 +11,21 @@
 
 An ML intern that autonomously researches, writes, and ships good quality ML related code using the Hugging Face ecosystem — with deep access to docs, papers, datasets, and cloud compute.
 
+> A fork of [huggingface/ml-intern](https://github.com/huggingface/ml-intern).
+> On top of upstream it adds: routing chosen models to a private
+> OpenAI-compatible endpoint (`CUSTOM_INFERENCE_*`, see below), a Zulip
+> notification gateway, a self-hosted Docker Compose stack, and procedural
+> skills the agent writes for itself. Upstream has since moved all inference
+> behind the HF Router; this fork keeps direct Anthropic/Bedrock and custom
+> endpoints, so the two have diverged on model routing.
+
 ## Quick Start
 
 ### Installation
 
 ```bash
-git clone git@github.com:huggingface/ml-intern.git
-cd ml-intern
+git clone git@github.com:Eljaja/ml-intern-custom-provider.git
+cd ml-intern-custom-provider
 uv sync
 uv tool install -e .
 ```
@@ -172,9 +180,10 @@ receives anonymized telemetry rows used by the backend KPI scheduler.
 
 ## Supported Gateways
 
-ML Intern currently supports one-way notification gateways from CLI sessions.
-These gateways send out-of-band status updates; they do not accept inbound chat
-messages.
+One-way notification gateways: they send out-of-band status updates on
+approval-required, error and turn-complete events, and do not accept inbound
+chat messages. Slack and Zulip are both available, from CLI and web sessions
+alike.
 
 ### Slack
 
@@ -219,6 +228,89 @@ JSON file:
   }
 }
 ```
+
+### Zulip
+
+Zulip notifications post to a stream (or a private message) on the same events.
+Create a bot in your Zulip organisation, then set:
+
+```bash
+ZULIP_SITE=https://chat.example.com
+ZULIP_BOT_EMAIL=ml-intern-bot@example.com
+ZULIP_API_KEY=...
+ZULIP_STREAM=ml-agent
+```
+
+A `zulip.default` destination is created automatically once site, bot email, API
+key and a target are all present. Optional variables mirror the Slack ones:
+
+```bash
+ML_INTERN_ZULIP_NOTIFICATIONS=false
+ML_INTERN_ZULIP_DESTINATION=zulip.ops
+ML_INTERN_ZULIP_AUTO_EVENTS=approval_required,error,turn_complete
+ML_INTERN_ZULIP_ALLOW_AGENT_TOOL=true
+ML_INTERN_ZULIP_ALLOW_AUTO_EVENTS=true
+```
+
+For private messages instead of a stream:
+
+```bash
+ZULIP_MESSAGE_TYPE=private
+ZULIP_TO=user@example.com
+```
+
+Both gateways are configured the same way and by the same code path
+(`agent/config.py`, `_ENV_PROVIDERS`), and both apply to CLI *and* web sessions.
+An explicit destination of the same name in a JSON config always wins over the
+environment.
+
+## Self-hosted stack (Docker Compose)
+
+```bash
+cp .env.example .env      # fill in the keys you need
+docker compose up --build
+```
+
+Then open <http://localhost:8080>. With GPUs:
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up --build
+```
+
+What the stack gives you, and what it assumes:
+
+- MongoDB for chat sessions, plus named volumes so the agent's workspace, its
+  learned skills and local trajectory backups survive `--build`.
+- `AGENT_LOCAL_MODE=1` — the agent runs `bash`/`read`/`write` **inside the
+  backend container**, not in a remote sandbox.
+- No `OAUTH_CLIENT_ID`, so authentication is off and every caller is served as
+  the `dev` user.
+
+Those last two together mean anyone who can reach the port can run commands and
+read the API keys out of the container environment. Both published ports are
+therefore bound to `127.0.0.1`, and `backend/runtime_guard.py` refuses to boot
+unless `ML_INTERN_ALLOW_UNAUTHENTICATED_LOCAL_MODE=1` acknowledges it. To serve
+this to other machines, configure HF OAuth and drop the acknowledgement — do not
+widen the port bindings.
+
+## Procedural skills
+
+In local mode (CLI, or the web backend with `AGENT_LOCAL_MODE=1`) the agent keeps
+a per-user store of reusable procedures under `ML_INTERN_SKILLS_DIR`, one
+`SKILL.md` per skill with YAML frontmatter.
+
+- `skills_list` / `skill_view` / `skill_manage` let the agent read and write them.
+  Registered only in local mode — the store is backed by a filesystem the hosted
+  sandbox deployment does not durably own.
+- The descriptions of enabled skills ride in the system prompt (capped at 40,
+  most recently used first) so the agent knows what exists without a tool call.
+- After a successful turn that used at least two tools, a low-effort reflection
+  call decides whether to save or amend a skill. It runs detached from the turn
+  and is reported as `kind="skill_reflection"` in telemetry. Set
+  `"skill_reflection": false` in the agent config to switch it off.
+- Skills are secret-scrubbed (`agent/core/redact.py`) and size-capped on write.
+  Manage them from the sidebar panel: view, enable/disable, delete.
+
 
 ## Architecture
 
@@ -353,15 +445,29 @@ The agent emits the following events via `event_queue`:
 
 ### Pre-commit Checks
 
-Run Ruff before every commit:
+Run Ruff and the test suite before every commit:
 
 ```bash
 uv run ruff check .
 uv run ruff format --check .
+uv run pytest
 ```
 
 If the format check fails, run `uv run ruff format .` and re-run the checks
-before committing.
+before committing. Lint rules live in `[tool.ruff.lint]` in `pyproject.toml`;
+every `ignore` there carries the reason it is ignored.
+
+The frontend is checked separately, and CI runs the same three commands:
+
+```bash
+cd frontend && npm ci && npm run lint && npm run build
+```
+
+`npm run build` is `tsc -b && vite build`, so it is also the typecheck.
+
+Three tests fail on Windows for environment reasons (`fcntl` is POSIX-only,
+plus a path-separator and a file-encoding assumption). They pass on the Linux
+CI runners.
 
 ### Adding Built-in Tools
 
