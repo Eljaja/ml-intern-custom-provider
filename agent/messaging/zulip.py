@@ -35,7 +35,7 @@ def _format_text(request: NotificationRequest) -> str:
 
 
 def _basic_auth_header(email: str, api_key: str) -> str:
-    token = base64.b64encode(f"{email}:{api_key}".encode("utf-8")).decode("ascii")
+    token = base64.b64encode(f"{email}:{api_key}".encode()).decode("ascii")
     return f"Basic {token}"
 
 

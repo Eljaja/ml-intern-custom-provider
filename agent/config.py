@@ -2,7 +2,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 from fastmcp.mcp_config import (
@@ -15,7 +15,7 @@ from agent.messaging.models import MessagingConfig
 from agent.project_root import find_project_root
 
 # These two are the canonical server config types for MCP servers.
-MCPServerConfig = Union[StdioMCPServer, RemoteMCPServer]
+MCPServerConfig = StdioMCPServer | RemoteMCPServer
 
 _PROJECT_ROOT = find_project_root()
 
@@ -84,7 +84,7 @@ def _deep_merge_config(
 
 
 def _load_json_config(path: Path) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     if not isinstance(data, dict):
         raise ValueError(f"Config file {path} must contain a JSON object")

@@ -12,7 +12,6 @@ from agent.core.doom_loop import (
     extract_recent_tool_signatures,
 )
 
-
 # ── Lightweight stand-ins so we don't need the litellm message classes ──
 
 

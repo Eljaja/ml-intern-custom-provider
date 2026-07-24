@@ -79,5 +79,67 @@ agent = ["README.md", "prompts/*.yaml"]
 [tool.uv]
 package = true
 
+[tool.ruff]
+# CI runs `ruff check .` + `ruff format --check .` (see .github/workflows/ci.yml).
+# Without a config that was ruff's default rule set only — E4/E7/E9 + F, i.e.
+# syntax errors and unused names. Everything below is what that missed.
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E4",     # imports (default)
+    "E7",     # statement-level checks (default)
+    "E9",     # runtime/syntax errors (default)
+    "F",      # pyflakes (default) — caught the duplicated llm_params block
+    "I",      # isort: import order drifted in every recent PR
+    "B",      # bugbear: mutable defaults, raise-without-from, unused loop vars
+    "UP",     # pyupgrade: repo is py312-only, keep the syntax there
+    "ASYNC",  # blocking calls inside async def — real risk on the SSE backend
+    "SIM",    # obvious simplifications
+]
+ignore = [
+    # `try: ... except Exception: pass` is used deliberately across the agent
+    # for best-effort paths (telemetry, cleanup, cache warmup) where a failure
+    # must never surface. contextlib.suppress reads worse at those call sites.
+    "SIM105",
+    # `from typing import Iterable/Callable` -> collections.abc. Correct, but
+    # the fix is marked unsafe by ruff and touches ~18 signatures across
+    # modules nobody is otherwise editing. Deferred, not endorsed.
+    "UP035",
+    # ASYNC109 flags `async def f(..., timeout=...)` on the assumption the
+    # timeout is hand-rolled. Ours are pass-throughs to httpx/litellm, which
+    # implement the timeout natively; asyncio.timeout at the call site would be
+    # strictly worse (it can't abort mid-read the way httpx can).
+    "ASYNC109",
+    # UP042 wants `class OpType(str, Enum)` -> StrEnum. Not equivalent:
+    # StrEnum changes `str(member)` from "OpType.X" to the member value, and
+    # these enums are stringified into events and persisted payloads.
+    "UP042",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test helpers legitimately poll with sleep loops and open fixture files
+# synchronously; the ASYNC rules target production request paths.
+"tests/**" = ["ASYNC110", "ASYNC230", "ASYNC240"]
+# The blocking `open` here is downstream of a blocking `hf_hub_download` in the
+# same function — the whole helper is sync-in-async. Silencing only the `open`
+# would be cosmetic: to actually unblock the event loop the download has to move
+# to a thread too. Tracked separately rather than half-fixed here.
+"agent/tools/hf_repo_files_tool.py" = ["ASYNC230", "ASYNC240"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI puts its dependency markers in default arguments by design; B008
+# would flag every route in backend/routes/.
+extend-immutable-calls = [
+    "fastapi.Body",
+    "fastapi.Cookie",
+    "fastapi.Depends",
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Header",
+    "fastapi.Path",
+    "fastapi.Query",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

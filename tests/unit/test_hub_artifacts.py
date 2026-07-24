@@ -574,7 +574,7 @@ def test_sitecustomize_skips_sandbox_space_registration(monkeypatch, tmp_path):
     monkeypatch.setattr(HfApi, "upload_file", fake_upload_file)
     monkeypatch.setattr(HfApi, "create_collection", fake_create_collection)
     monkeypatch.setattr(HfApi, "add_collection_item", fake_add_collection_item)
-    monkeypatch.setattr(hub, "upload_file", getattr(hub, "upload_file"))
+    monkeypatch.setattr(hub, "upload_file", hub.upload_file)
     monkeypatch.setattr(hub, "hf_hub_download", fake_hf_hub_download)
 
     exec(build_hub_artifact_sitecustomize(_session()), {})

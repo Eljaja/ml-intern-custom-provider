@@ -21,7 +21,7 @@ that the dashboard Space can't read, and the iframe shows "No projects".
 from __future__ import annotations
 
 import io
-from typing import Callable, Optional
+from typing import Callable
 
 from huggingface_hub import (
     HfApi,
@@ -31,7 +31,6 @@ from huggingface_hub import (
     create_repo,
 )
 from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
-
 
 _README = """---
 title: Trackio Dashboard
@@ -83,7 +82,7 @@ def _already_seeded(api: HfApi, space_id: str) -> bool:
     except (EntryNotFoundError, RepositoryNotFoundError, OSError):
         return False
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return "trackio.show" in f.read()
     except OSError:
         return False
@@ -109,7 +108,7 @@ def _ensure_bucket_mounted(
     space_id: str,
     bucket_id: str,
     hf_token: str,
-    log: Optional[Callable[[str], None]] = None,
+    log: Callable[[str], None] | None = None,
 ) -> None:
     """Create the bucket if missing, mount it at `/data` on the Space, and
     set the `TRACKIO_DIR` / `TRACKIO_BUCKET_ID` Space variables. Idempotent —
@@ -158,7 +157,7 @@ def _ensure_bucket_mounted(
 def ensure_trackio_dashboard(
     space_id: str,
     hf_token: str,
-    log: Optional[Callable[[str], None]] = None,
+    log: Callable[[str], None] | None = None,
 ) -> bool:
     """Make sure *space_id* is fully wired for trackio:
     1. Space exists with our dashboard files (README without `hf_oauth`,

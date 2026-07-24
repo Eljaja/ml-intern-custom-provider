@@ -18,7 +18,6 @@ import logging
 import time
 from dataclasses import dataclass
 from difflib import get_close_matches
-from typing import Optional
 
 import httpx
 
@@ -28,7 +27,7 @@ _CATALOG_URL = "https://router.huggingface.co/v1/models"
 _CACHE_TTL_SECONDS = 300
 _HTTP_TIMEOUT_SECONDS = 5.0
 
-_cache: Optional[dict] = None
+_cache: dict | None = None
 _cache_time: float = 0.0
 
 
@@ -36,9 +35,9 @@ _cache_time: float = 0.0
 class ProviderInfo:
     provider: str
     status: str
-    context_length: Optional[int]
-    input_price: Optional[float]
-    output_price: Optional[float]
+    context_length: int | None
+    input_price: float | None
+    output_price: float | None
     supports_tools: bool
     supports_structured_output: bool
 
@@ -53,7 +52,7 @@ class ModelInfo:
         return [p for p in self.providers if p.status == "live"]
 
     @property
-    def max_context_length(self) -> Optional[int]:
+    def max_context_length(self) -> int | None:
         lengths = [p.context_length for p in self.live_providers if p.context_length]
         return max(lengths) if lengths else None
 
@@ -100,7 +99,7 @@ def _parse_entry(entry: dict) -> ModelInfo:
     return ModelInfo(id=entry.get("id", ""), providers=providers)
 
 
-def lookup(model_id: str) -> Optional[ModelInfo]:
+def lookup(model_id: str) -> ModelInfo | None:
     """Find a model in the router catalog.
 
     Accepts ``<org>/<model>`` or ``<org>/<model>:<tag>`` — the tag is stripped

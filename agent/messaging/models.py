@@ -1,4 +1,4 @@
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -62,7 +62,7 @@ class ZulipDestinationConfig(BaseModel):
 
 
 DestinationConfig = Annotated[
-    Union[SlackDestinationConfig, ZulipDestinationConfig],
+    SlackDestinationConfig | ZulipDestinationConfig,
     Field(discriminator="provider"),
 ]
 

@@ -7,7 +7,7 @@ Fetch exact file contents with metadata, supporting line ranges for efficient re
 import base64
 import json
 import os
-from typing import Any, Dict, Optional
+from typing import Any
 
 import nbformat
 import requests
@@ -68,8 +68,8 @@ def read_file(
     repo: str,
     path: str,
     ref: str = "HEAD",
-    line_start: Optional[int] = None,
-    line_end: Optional[int] = None,
+    line_start: int | None = None,
+    line_end: int | None = None,
 ) -> ToolResult:
     """
     Read file contents from a GitHub repository with line range support.
@@ -287,7 +287,7 @@ GITHUB_READ_FILE_TOOL_SPEC = {
 }
 
 
-async def github_read_file_handler(arguments: Dict[str, Any]) -> tuple[str, bool]:
+async def github_read_file_handler(arguments: dict[str, Any]) -> tuple[str, bool]:
     """Handler for agent tool router"""
     try:
         result = read_file(

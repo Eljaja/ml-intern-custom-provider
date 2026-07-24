@@ -27,9 +27,8 @@ import asyncio
 import importlib.util
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +40,7 @@ _background_tasks: set[asyncio.Task] = set()
 _scheduler = None  # AsyncIOScheduler instance (lazy import)
 
 
-def _resolve_token() -> Optional[str]:
+def _resolve_token() -> str | None:
     """Pick the first available HF token. Least-privilege first."""
     for var in (
         "HF_KPI_WRITE_TOKEN",
@@ -87,13 +86,13 @@ async def _run_hour(hour_dt: datetime) -> None:
 
 async def run_last_completed_hour() -> None:
     """The scheduled-at-:05 job. Rolls up the previous whole hour."""
-    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     await _run_hour(now - timedelta(hours=1))
 
 
 async def backfill(hours: int = 6) -> None:
     """Catch-up pass for hours the Space was down. Idempotent (overwrites)."""
-    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     for i in range(1, hours + 1):
         await _run_hour(now - timedelta(hours=i))
 

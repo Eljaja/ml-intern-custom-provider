@@ -129,7 +129,9 @@ async def oauth_callback(
             response.raise_for_status()
             token_data = response.json()
         except httpx.HTTPError as e:
-            raise HTTPException(status_code=500, detail=f"Token exchange failed: {e}")
+            raise HTTPException(
+                status_code=500, detail=f"Token exchange failed: {e}"
+            ) from e
 
     # Get user info
     access_token = token_data.get("access_token")

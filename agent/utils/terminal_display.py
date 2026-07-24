@@ -6,8 +6,8 @@ import asyncio
 import re
 
 from rich.console import Console
-from rich.markup import escape
 from rich.markdown import Heading, Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.theme import Theme
 
@@ -99,8 +99,8 @@ def print_banner(
     tool_runtime: str | None = None,
 ) -> None:
     """Print particle logo then CRT boot sequence with system info."""
-    from agent.utils.particle_logo import run_particle_logo
     from agent.utils.crt_boot import run_boot_sequence
+    from agent.utils.particle_logo import run_particle_logo
 
     # Particle coalesce logo — 1.5s converge, 2s hold
     run_particle_logo(_console, hold_seconds=2.0)
@@ -350,6 +350,7 @@ async def print_markdown(
 ) -> None:
     import io
     import random
+
     from rich.padding import Padding
 
     _console.print()
@@ -394,9 +395,7 @@ async def print_markdown(
             break
         f.write(ch)
         f.flush()
-        if ch == "\n":
-            await asyncio.sleep(0.002)
-        elif ch == " ":
+        if ch == "\n" or ch == " ":
             await asyncio.sleep(0.002)
         elif rng.random() < 0.03:
             await asyncio.sleep(0.015)

@@ -1,9 +1,9 @@
 from agent.messaging.gateway import NotificationGateway
 from agent.messaging.models import (
+    SUPPORTED_AUTO_EVENT_TYPES,
     MessagingConfig,
     NotificationRequest,
     NotificationResult,
-    SUPPORTED_AUTO_EVENT_TYPES,
 )
 
 __all__ = [

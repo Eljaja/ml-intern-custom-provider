@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -16,8 +16,9 @@ _BACKEND_DIR = Path(__file__).resolve().parent.parent.parent / "backend"
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
-from agent.core.session_persistence import NoopSessionStore  # noqa: E402
 from session_manager import AgentSession, SessionManager  # noqa: E402
+
+from agent.core.session_persistence import NoopSessionStore  # noqa: E402
 
 
 class FakeRuntimeSession:

@@ -6,6 +6,7 @@ on hand-crafted session trajectories — no network, no HF Hub.
 
 import importlib.util
 import sys
+from datetime import UTC
 from pathlib import Path
 
 
@@ -394,7 +395,7 @@ def test_failure_and_regenerate_rates():
 
 
 def test_window_filter_keeps_only_events_in_range():
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     mod = _load()
     events = [
@@ -405,8 +406,8 @@ def test_window_filter_keeps_only_events_in_range():
     ]
     session = _session(events, start="2026-04-24T09:44:00")
     # Only events in [10:00, 11:00) should remain.
-    window_start = datetime(2026, 4, 24, 10, 0, 0, tzinfo=timezone.utc)
-    window_end = datetime(2026, 4, 24, 11, 0, 0, tzinfo=timezone.utc)
+    window_start = datetime(2026, 4, 24, 10, 0, 0, tzinfo=UTC)
+    window_end = datetime(2026, 4, 24, 11, 0, 0, tzinfo=UTC)
     windowed = mod._filter_session_to_window(session, window_start, window_end)
     assert windowed is not None
     types = [e["event_type"] for e in windowed["events"]]
@@ -419,11 +420,11 @@ def test_window_filter_keeps_only_events_in_range():
 
 
 def test_window_filter_returns_none_when_nothing_in_range():
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     mod = _load()
     events = [_ev("llm_call", {"prompt_tokens": 100}, ts="2026-04-24T09:45:00")]
     session = _session(events)
-    window_start = datetime(2026, 4, 24, 10, 0, 0, tzinfo=timezone.utc)
-    window_end = datetime(2026, 4, 24, 11, 0, 0, tzinfo=timezone.utc)
+    window_start = datetime(2026, 4, 24, 10, 0, 0, tzinfo=UTC)
+    window_end = datetime(2026, 4, 24, 11, 0, 0, tzinfo=UTC)
     assert mod._filter_session_to_window(session, window_start, window_end) is None

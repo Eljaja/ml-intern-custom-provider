@@ -7,7 +7,7 @@ Includes GPU memory validation for job submissions
 
 import json
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 def truncate(text: str, max_length: int) -> str:
@@ -17,7 +17,7 @@ def truncate(text: str, max_length: int) -> str:
     return text[: max_length - 3] + "..."
 
 
-def format_date(date_str: Optional[str]) -> str:
+def format_date(date_str: str | None) -> str:
     """Format a date string to a readable format"""
     if not date_str:
         return "N/A"
@@ -28,14 +28,14 @@ def format_date(date_str: Optional[str]) -> str:
         return date_str
 
 
-def format_command(command: Optional[List[str]]) -> str:
+def format_command(command: list[str] | None) -> str:
     """Format command array as a single string"""
     if not command or len(command) == 0:
         return "N/A"
     return " ".join(command)
 
 
-def get_image_or_space(job: Dict[str, Any]) -> str:
+def get_image_or_space(job: dict[str, Any]) -> str:
     """Get image/space identifier from job"""
     if job.get("spaceId"):
         return job["spaceId"]
@@ -44,7 +44,7 @@ def get_image_or_space(job: Dict[str, Any]) -> str:
     return "N/A"
 
 
-def format_jobs_table(jobs: List[Dict[str, Any]]) -> str:
+def format_jobs_table(jobs: list[dict[str, Any]]) -> str:
     """Format jobs as a markdown table"""
     if len(jobs) == 0:
         return "No jobs found."
@@ -82,7 +82,7 @@ def format_jobs_table(jobs: List[Dict[str, Any]]) -> str:
     return "\n".join([header, separator] + rows)
 
 
-def format_scheduled_jobs_table(jobs: List[Dict[str, Any]]) -> str:
+def format_scheduled_jobs_table(jobs: list[dict[str, Any]]) -> str:
     """Format scheduled jobs as a markdown table"""
     if len(jobs) == 0:
         return "No scheduled jobs found."

@@ -63,7 +63,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from huggingface_hub import HfApi
 from huggingface_hub.utils import HfHubHTTPError
@@ -74,7 +74,7 @@ TEMPLATE_REPO = "burtenshaw/sandbox"
 
 def log(record: dict) -> None:
     """JSON Lines log so downstream tooling can grep / parse."""
-    record["ts"] = datetime.now(timezone.utc).isoformat()
+    record["ts"] = datetime.now(UTC).isoformat()
     print(json.dumps(record), flush=True)
 
 
@@ -127,7 +127,7 @@ def main() -> int:
         return 1
 
     api = HfApi(token=token)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=args.max_age_days)
+    cutoff = datetime.now(UTC) - timedelta(days=args.max_age_days)
     log(
         {
             "level": "info",

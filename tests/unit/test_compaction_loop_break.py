@@ -33,11 +33,10 @@ import pytest
 from litellm import Message
 
 from agent.context_manager.manager import (
+    _MAX_TOKENS_PER_MESSAGE,
     CompactionFailedError,
     ContextManager,
-    _MAX_TOKENS_PER_MESSAGE,
 )
-
 
 # ── helpers ────────────────────────────────────────────────────────────
 
@@ -171,14 +170,14 @@ async def test_compact_raises_when_post_compact_still_over_threshold():
         patch.object(ContextManager, "_recompute_usage", fake_recompute),
         # Avoid token_counter calls in _truncate_oversized
         patch("litellm.token_counter", return_value=100),
+        pytest.raises(CompactionFailedError),
     ):
-        with pytest.raises(CompactionFailedError):
-            await cm.compact(
-                model_name="anthropic/claude-opus-4-6",
-                tool_specs=None,
-                hf_token=None,
-                session=None,
-            )
+        await cm.compact(
+            model_name="anthropic/claude-opus-4-6",
+            tool_specs=None,
+            hf_token=None,
+            session=None,
+        )
 
 
 @pytest.mark.asyncio

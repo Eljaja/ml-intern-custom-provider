@@ -5,7 +5,7 @@ Efficiently discover repositories with flexible sorting options.
 """
 
 import os
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Literal
 
 import requests
 
@@ -17,7 +17,7 @@ def list_repos(
     owner_type: Literal["user", "org"] = "org",
     sort: Literal["stars", "forks", "updated", "created"] = "stars",
     order: Literal["asc", "desc"] = "desc",
-    limit: Optional[int] = 30,
+    limit: int | None = 30,
 ) -> ToolResult:
     """
     List repositories for a user or organization using GitHub REST API.
@@ -272,7 +272,7 @@ GITHUB_LIST_REPOS_TOOL_SPEC = {
 }
 
 
-async def github_list_repos_handler(arguments: Dict[str, Any]) -> tuple[str, bool]:
+async def github_list_repos_handler(arguments: dict[str, Any]) -> tuple[str, bool]:
     """Handler for agent tool router"""
     try:
         result = list_repos(

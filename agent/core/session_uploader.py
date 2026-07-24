@@ -91,7 +91,7 @@ def _msg_uuid(session_id: str, role: str, idx: int) -> str:
     parent/child chain stable. Same convention as the example dataset
     https://huggingface.co/datasets/clem/hf-coding-tools-traces.
     """
-    digest = hashlib.sha1(f"{session_id}::{role}::{idx}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha1(f"{session_id}::{role}::{idx}".encode()).hexdigest()
     # Format like a UUID for visual familiarity (32 hex chars w/ dashes).
     return (
         f"{digest[0:8]}-{digest[8:12]}-{digest[12:16]}-{digest[16:20]}-{digest[20:32]}"
@@ -304,7 +304,7 @@ def _read_session_file(session_file: str) -> dict:
     """Read a local session file while respecting uploader file locks."""
     import fcntl
 
-    with open(session_file, "r") as f:
+    with open(session_file) as f:
         fcntl.flock(f, fcntl.LOCK_SH)
         try:
             return json.load(f)

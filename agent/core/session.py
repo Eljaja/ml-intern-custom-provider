@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from litellm import Message
 
@@ -72,8 +72,8 @@ class OpType(Enum):
 @dataclass
 class Event:
     event_type: str
-    data: Optional[dict[str, Any]] = None
-    seq: Optional[int] = None
+    data: dict[str, Any] | None = None
+    seq: int | None = None
 
 
 class Session:
@@ -99,9 +99,9 @@ class Session:
         hf_username: str | None = None,
         persistence_store: Any | None = None,
     ):
-        self.hf_token: Optional[str] = hf_token
-        self.user_id: Optional[str] = user_id
-        self.hf_username: Optional[str] = hf_username
+        self.hf_token: str | None = hf_token
+        self.user_id: str | None = user_id
+        self.hf_username: str | None = hf_username
         self.local_mode = local_mode
         self.persistence_store = persistence_store
         self.tool_router = tool_router
@@ -124,7 +124,7 @@ class Session:
         self.is_running = True
         self.current_plan: list[dict[str, str]] = []
         self._cancelled = asyncio.Event()
-        self.pending_approval: Optional[dict[str, Any]] = None
+        self.pending_approval: dict[str, Any] | None = None
         self.sandbox = None
         self.notification_gateway = notification_gateway
         self.notification_destinations = list(notification_destinations or [])
@@ -141,8 +141,8 @@ class Session:
         # Stable local save path so heartbeat saves overwrite one file instead
         # of spamming session_logs/. ``_last_heartbeat_ts`` is owned by
         # ``agent.core.telemetry.HeartbeatSaver`` and lazily initialised there.
-        self._local_save_path: Optional[str] = None
-        self._last_heartbeat_ts: Optional[float] = None
+        self._local_save_path: str | None = None
+        self._last_heartbeat_ts: float | None = None
 
         # Per-model probed reasoning-effort cache. Populated by the probe
         # on /model switch, read by ``effective_effort_for`` below. Keys are
@@ -514,8 +514,8 @@ class Session:
         self,
         directory: str = str(DEFAULT_SESSION_LOG_DIR),
         upload_status: str = "pending",
-        dataset_url: Optional[str] = None,
-    ) -> Optional[str]:
+        dataset_url: str | None = None,
+    ) -> str | None:
         """
         Save trajectory to local JSON file as backup with upload status
 
@@ -577,11 +577,11 @@ class Session:
             return None
 
     def update_local_save_status(
-        self, filepath: str, upload_status: str, dataset_url: Optional[str] = None
+        self, filepath: str, upload_status: str, dataset_url: str | None = None
     ) -> bool:
         """Update the upload status of an existing local save file"""
         try:
-            with open(filepath, "r") as f:
+            with open(filepath) as f:
                 data = json.load(f)
 
             data["upload_status"] = upload_status
@@ -596,7 +596,7 @@ class Session:
             logger.error(f"Failed to update local save status: {e}")
             return False
 
-    def _personal_trace_repo_id(self) -> Optional[str]:
+    def _personal_trace_repo_id(self) -> str | None:
         """Resolve the per-user trace repo id from config + HF username.
 
         Returns ``None`` when sharing is disabled, the user is anonymous,
@@ -624,9 +624,9 @@ class Session:
         repo_id: str,
         *,
         format: str,
-        token_env: Optional[str],
+        token_env: str | None,
         private: bool,
-        token_value: Optional[str] = None,
+        token_value: str | None = None,
     ) -> None:
         """Fire-and-forget spawn of ``session_uploader.py`` with the given args."""
         try:
@@ -660,7 +660,7 @@ class Session:
         except Exception as e:
             logger.warning(f"Failed to spawn upload subprocess: {e}")
 
-    def save_and_upload_detached(self, repo_id: str) -> Optional[str]:
+    def save_and_upload_detached(self, repo_id: str) -> str | None:
         """
         Save session locally and spawn detached subprocess(es) for upload
         (fire-and-forget).
@@ -708,9 +708,9 @@ class Session:
     @staticmethod
     def retry_failed_uploads_detached(
         directory: str = str(DEFAULT_SESSION_LOG_DIR),
-        repo_id: Optional[str] = None,
+        repo_id: str | None = None,
         *,
-        personal_repo_id: Optional[str] = None,
+        personal_repo_id: str | None = None,
     ) -> None:
         """
         Spawn detached subprocess(es) to retry failed/pending uploads

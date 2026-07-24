@@ -7,13 +7,17 @@ import logging
 import os
 import warnings
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable
 
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from mcp.types import EmbeddedResource, ImageContent, TextContent
 
 from agent.config import MCPServerConfig
+from agent.tools.archive_search_tool import (
+    ARCHIVE_SEARCH_TOOL_SPEC,
+    archive_search_handler,
+)
 from agent.tools.dataset_tools import (
     HF_INSPECT_DATASET_TOOL_SPEC,
     hf_inspect_dataset_handler,
@@ -44,10 +48,6 @@ from agent.tools.hf_repo_git_tool import (
     HF_REPO_GIT_TOOL_SPEC,
     hf_repo_git_handler,
 )
-from agent.tools.archive_search_tool import (
-    ARCHIVE_SEARCH_TOOL_SPEC,
-    archive_search_handler,
-)
 from agent.tools.notify_tool import NOTIFY_TOOL_SPEC, notify_handler
 from agent.tools.papers_tool import HF_PAPERS_TOOL_SPEC, hf_papers_handler
 from agent.tools.plan_tool import PLAN_TOOL_SPEC, plan_tool_handler
@@ -62,12 +62,6 @@ from agent.tools.skills_tool import (
     skills_list_handler,
 )
 from agent.tools.web_search_tool import WEB_SEARCH_TOOL_SPEC, web_search_handler
-
-# NOTE: Private HF repo tool disabled - replaced by hf_repo_files and hf_repo_git
-# from agent.tools.private_hf_repo_tools import (
-#     PRIVATE_HF_REPO_TOOL_SPEC,
-#     private_hf_repo_handler,
-# )
 
 # Suppress aiohttp deprecation warning
 warnings.filterwarnings(
@@ -134,7 +128,7 @@ class ToolSpec:
     name: str
     description: str
     parameters: dict[str, Any]
-    handler: Optional[Callable[[dict[str, Any]], Awaitable[tuple[str, bool]]]] = None
+    handler: Callable[[dict[str, Any]], Awaitable[tuple[str, bool]]] | None = None
 
 
 class ToolRouter:

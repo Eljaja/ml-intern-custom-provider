@@ -16,7 +16,7 @@ import re
 import threading
 import weakref
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from huggingface_hub import HfApi, SpaceHardware
@@ -172,7 +172,7 @@ async def _persist_active_sandbox(
         sandbox_space_id=space_id,
         sandbox_hardware=hardware,
         sandbox_owner=owner,
-        sandbox_created_at=datetime.now(timezone.utc),
+        sandbox_created_at=datetime.now(UTC),
         sandbox_status="active",
     )
 
@@ -209,7 +209,7 @@ def _cleanup_user_orphan_sandboxes(
     Runs blocking — call via ``asyncio.to_thread``. Best-effort: failures
     are logged but never raised, so a flaky HF API never blocks creation.
     """
-    cutoff = datetime.now(timezone.utc) - _ORPHAN_STALE_AFTER
+    cutoff = datetime.now(UTC) - _ORPHAN_STALE_AFTER
     deleted = 0
     try:
         spaces = list(api.list_spaces(author=owner, limit=200, full=True))
@@ -456,7 +456,7 @@ async def cancel_sandbox_preload(session: Any) -> None:
 
     try:
         await asyncio.wait_for(asyncio.shield(task), timeout=30)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning(
             "Timed out waiting for CPU sandbox preload cancellation; "
             "task is still live, cancelling asyncio wrapper"
@@ -776,7 +776,7 @@ def get_sandbox_tools():
     )
 
     # Operation tools (auto-execute, no approval needed)
-    for name in Sandbox.TOOLS.keys():
+    for name in Sandbox.TOOLS:
         spec = Sandbox.TOOLS[name]
         tools.append(
             ToolSpec(

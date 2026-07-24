@@ -5,7 +5,7 @@ Operations: branches, tags, PRs, repo management
 """
 
 import asyncio
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Literal
 
 from huggingface_hub import HfApi
 from huggingface_hub.utils import RepositoryNotFoundError
@@ -46,11 +46,11 @@ def _build_repo_url(repo_id: str, repo_type: str = "model") -> str:
 class HfRepoGitTool:
     """Tool for git-like operations on HF repos."""
 
-    def __init__(self, hf_token: Optional[str] = None, session: Any = None):
+    def __init__(self, hf_token: str | None = None, session: Any = None):
         self.api = HfApi(token=hf_token)
         self.session = session
 
-    async def execute(self, args: Dict[str, Any]) -> ToolResult:
+    async def execute(self, args: dict[str, Any]) -> ToolResult:
         """Execute the specified operation."""
         operation = args.get("operation")
 
@@ -119,7 +119,7 @@ class HfRepoGitTool:
     # BRANCH OPERATIONS
     # =========================================================================
 
-    async def _create_branch(self, args: Dict[str, Any]) -> ToolResult:
+    async def _create_branch(self, args: dict[str, Any]) -> ToolResult:
         """Create a new branch."""
         repo_id = args.get("repo_id")
         branch = args.get("branch")
@@ -148,7 +148,7 @@ class HfRepoGitTool:
             "resultsShared": 1,
         }
 
-    async def _delete_branch(self, args: Dict[str, Any]) -> ToolResult:
+    async def _delete_branch(self, args: dict[str, Any]) -> ToolResult:
         """Delete a branch."""
         repo_id = args.get("repo_id")
         branch = args.get("branch")
@@ -177,7 +177,7 @@ class HfRepoGitTool:
     # TAG OPERATIONS
     # =========================================================================
 
-    async def _create_tag(self, args: Dict[str, Any]) -> ToolResult:
+    async def _create_tag(self, args: dict[str, Any]) -> ToolResult:
         """Create a tag."""
         repo_id = args.get("repo_id")
         tag = args.get("tag")
@@ -208,7 +208,7 @@ class HfRepoGitTool:
             "resultsShared": 1,
         }
 
-    async def _delete_tag(self, args: Dict[str, Any]) -> ToolResult:
+    async def _delete_tag(self, args: dict[str, Any]) -> ToolResult:
         """Delete a tag."""
         repo_id = args.get("repo_id")
         tag = args.get("tag")
@@ -237,7 +237,7 @@ class HfRepoGitTool:
     # LIST REFS
     # =========================================================================
 
-    async def _list_refs(self, args: Dict[str, Any]) -> ToolResult:
+    async def _list_refs(self, args: dict[str, Any]) -> ToolResult:
         """List branches and tags."""
         repo_id = args.get("repo_id")
 
@@ -280,7 +280,7 @@ class HfRepoGitTool:
     # PR OPERATIONS
     # =========================================================================
 
-    async def _create_pr(self, args: Dict[str, Any]) -> ToolResult:
+    async def _create_pr(self, args: dict[str, Any]) -> ToolResult:
         """Create a pull request."""
         repo_id = args.get("repo_id")
         title = args.get("title")
@@ -308,7 +308,7 @@ class HfRepoGitTool:
             "resultsShared": 1,
         }
 
-    async def _list_prs(self, args: Dict[str, Any]) -> ToolResult:
+    async def _list_prs(self, args: dict[str, Any]) -> ToolResult:
         """List PRs and discussions."""
         repo_id = args.get("repo_id")
 
@@ -358,7 +358,7 @@ class HfRepoGitTool:
             "resultsShared": min(20, len(discussions)),
         }
 
-    async def _get_pr(self, args: Dict[str, Any]) -> ToolResult:
+    async def _get_pr(self, args: dict[str, Any]) -> ToolResult:
         """Get PR details."""
         repo_id = args.get("repo_id")
         pr_num = args.get("pr_num")
@@ -394,19 +394,12 @@ class HfRepoGitTool:
             url,
         ]
 
-        if pr.is_pull_request:
-            if pr.status == "draft":
-                lines.append(
-                    f'\nTo add commits: upload with revision="refs/pr/{pr_num}"'
-                )
-            elif pr.status == "open":
-                lines.append(
-                    f'\nTo add commits: upload with revision="refs/pr/{pr_num}"'
-                )
+        if pr.is_pull_request and pr.status in ("draft", "open"):
+            lines.append(f'\nTo add commits: upload with revision="refs/pr/{pr_num}"')
 
         return {"formatted": "\n".join(lines), "totalResults": 1, "resultsShared": 1}
 
-    async def _merge_pr(self, args: Dict[str, Any]) -> ToolResult:
+    async def _merge_pr(self, args: dict[str, Any]) -> ToolResult:
         """Merge a pull request."""
         repo_id = args.get("repo_id")
         pr_num = args.get("pr_num")
@@ -434,7 +427,7 @@ class HfRepoGitTool:
             "resultsShared": 1,
         }
 
-    async def _close_pr(self, args: Dict[str, Any]) -> ToolResult:
+    async def _close_pr(self, args: dict[str, Any]) -> ToolResult:
         """Close a PR/discussion."""
         repo_id = args.get("repo_id")
         pr_num = args.get("pr_num")
@@ -462,7 +455,7 @@ class HfRepoGitTool:
             "resultsShared": 1,
         }
 
-    async def _comment_pr(self, args: Dict[str, Any]) -> ToolResult:
+    async def _comment_pr(self, args: dict[str, Any]) -> ToolResult:
         """Add a comment to a PR/discussion."""
         repo_id = args.get("repo_id")
         pr_num = args.get("pr_num")
@@ -492,7 +485,7 @@ class HfRepoGitTool:
             "resultsShared": 1,
         }
 
-    async def _change_pr_status(self, args: Dict[str, Any]) -> ToolResult:
+    async def _change_pr_status(self, args: dict[str, Any]) -> ToolResult:
         """Change PR/discussion status (mainly to convert draft to open)."""
         repo_id = args.get("repo_id")
         pr_num = args.get("pr_num")
@@ -528,7 +521,7 @@ class HfRepoGitTool:
     # REPO MANAGEMENT
     # =========================================================================
 
-    async def _create_repo(self, args: Dict[str, Any]) -> ToolResult:
+    async def _create_repo(self, args: dict[str, Any]) -> ToolResult:
         """Create a new repository."""
         repo_id = args.get("repo_id")
 
@@ -572,7 +565,7 @@ class HfRepoGitTool:
             "resultsShared": 1,
         }
 
-    async def _update_repo(self, args: Dict[str, Any]) -> ToolResult:
+    async def _update_repo(self, args: dict[str, Any]) -> ToolResult:
         """Update repository settings."""
         repo_id = args.get("repo_id")
 
@@ -755,7 +748,7 @@ HF_REPO_GIT_TOOL_SPEC = {
 
 
 async def hf_repo_git_handler(
-    arguments: Dict[str, Any], session=None
+    arguments: dict[str, Any], session=None
 ) -> tuple[str, bool]:
     """Handler for agent tool router."""
     try:

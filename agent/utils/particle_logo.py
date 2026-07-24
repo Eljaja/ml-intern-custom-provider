@@ -11,13 +11,13 @@ import math
 import random
 import time
 
-from rich.console import Console
-from rich.text import Text
 from rich.align import Align
+from rich.console import Console
 from rich.live import Live
+from rich.text import Text
 
-from agent.utils.braille import BrailleCanvas, text_to_pixels
 from agent.utils.boot_timing import settle_curve, warm_gold_from_white
+from agent.utils.braille import BrailleCanvas, text_to_pixels
 
 
 class Particle:
@@ -113,7 +113,7 @@ def run_particle_logo(console: Console, hold_seconds: float = 1.5) -> None:
     particles = []
     pw, ph = canvas.pixel_width, canvas.pixel_height
 
-    for i, (tx, ty) in enumerate(sampled_targets):
+    for tx, ty in sampled_targets:
         # Spawn from random edge
         side = rng.choice(["top", "bottom", "left", "right"])
         if side == "top":

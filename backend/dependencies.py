@@ -14,10 +14,9 @@ from typing import Any
 import httpx
 from fastapi import HTTPException, Request, status
 
-from agent.core.hf_tokens import bearer_token_from_header, clean_hf_token
-
 from agent.core import skills as user_skills
 from agent.core.hf_access import fetch_whoami_v2
+from agent.core.hf_tokens import bearer_token_from_header, clean_hf_token
 
 logger = logging.getLogger(__name__)
 

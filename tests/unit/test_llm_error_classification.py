@@ -13,15 +13,14 @@ Covers two regressions on 2026-04-25:
 """
 
 from agent.core.agent_loop import (
-    _MAX_LLM_RETRIES,
     _LLM_RATE_LIMIT_RETRY_DELAYS,
     _LLM_RETRY_DELAYS,
+    _MAX_LLM_RETRIES,
     _is_context_overflow_error,
     _is_rate_limit_error,
     _is_transient_error,
     _retry_delay_for,
 )
-
 
 # ── context overflow ────────────────────────────────────────────────────
 

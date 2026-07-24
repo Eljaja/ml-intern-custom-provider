@@ -20,10 +20,9 @@ from litellm.exceptions import ContextWindowExceededError
 
 from agent.config import Config
 from agent.core import skills as user_skills
+from agent.core import telemetry
 from agent.core.approval_policy import normalize_tool_operation
 from agent.core.cost_estimation import CostEstimate, estimate_tool_cost
-from agent.messaging.gateway import NotificationGateway
-from agent.core import telemetry
 from agent.core.doom_loop import check_for_doom_loop
 from agent.core.llm_params import (
     _resolve_llm_params,
@@ -32,6 +31,7 @@ from agent.core.llm_params import (
 from agent.core.prompt_caching import with_prompt_caching
 from agent.core.session import DEFAULT_SESSION_LOG_DIR, Event, OpType, Session
 from agent.core.tools import ToolRouter
+from agent.messaging.gateway import NotificationGateway
 
 logger = logging.getLogger(__name__)
 
@@ -104,9 +104,12 @@ def _skill_reflection_tool_stats(
         tool = data.get("tool")
         if tool == "skill_manage":
             used_skill_manage = True
-        if event.get("event_type") == "tool_output" and data.get("success") is True:
-            if tool not in {"skills_list", "skill_view", "skill_manage", "plan_tool"}:
-                tool_outputs += 1
+        if (
+            event.get("event_type") == "tool_output"
+            and data.get("success") is True
+            and tool not in {"skills_list", "skill_view", "skill_manage", "plan_tool"}
+        ):
+            tool_outputs += 1
     return tool_outputs, used_skill_manage
 
 
@@ -315,9 +318,7 @@ def _base_needs_approval(
     if tool_name == "hf_private_repos":
         operation = tool_args.get("operation", "")
         if operation == "upload_file":
-            if config and config.auto_file_upload:
-                return False
-            return True
+            return not (config and config.auto_file_upload)
         # Other operations (create_repo, etc.) always require approval
         if operation in ["create_repo"]:
             return True
@@ -367,7 +368,7 @@ def _remaining_budget_after_reservations(
 ) -> float | None:
     if not session or getattr(session, "auto_approval_cost_cap_usd", None) is None:
         return None
-    cap = float(getattr(session, "auto_approval_cost_cap_usd") or 0.0)
+    cap = float(session.auto_approval_cost_cap_usd or 0.0)
     spent = float(getattr(session, "auto_approval_estimated_spend_usd", 0.0) or 0.0)
     return round(max(0.0, cap - spent - reserved_spend_usd), 4)
 
@@ -1696,7 +1697,7 @@ class Handlers:
                     results = gather_task.result()
 
                     # 4. Record results and send outputs (order preserved)
-                    for tc, tool_name, tool_args, output, success in results:
+                    for tc, tool_name, _tool_args, output, success in results:
                         tool_msg = Message(
                             role="tool",
                             content=output,
@@ -1944,7 +1945,7 @@ class Handlers:
         session.pending_approval = None
 
         # Notify frontend of approval decisions immediately (before execution)
-        for tc, tool_name, tool_args, _was_edited in approved_tasks:
+        for tc, tool_name, _tool_args, _was_edited in approved_tasks:
             await session.send_event(
                 Event(
                     event_type="tool_state_change",
@@ -1955,7 +1956,7 @@ class Handlers:
                     },
                 )
             )
-        for tc, tool_name, approval_decision in rejected_tasks:
+        for tc, tool_name, _approval_decision in rejected_tasks:
             await session.send_event(
                 Event(
                     event_type="tool_state_change",

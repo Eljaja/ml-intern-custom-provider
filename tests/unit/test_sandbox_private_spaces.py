@@ -727,7 +727,7 @@ def test_cancel_sandbox_preload_cancels_task_after_timeout(monkeypatch):
     async def run():
         async def fake_wait_for(awaitable, timeout):
             await asyncio.sleep(0)
-            raise asyncio.TimeoutError
+            raise TimeoutError
 
         monkeypatch.setattr(sandbox_tool.asyncio, "wait_for", fake_wait_for)
 

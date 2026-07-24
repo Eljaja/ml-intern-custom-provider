@@ -9,6 +9,12 @@ import json
 import logging
 from typing import Any
 
+import user_quotas
+from dataset_uploads import (
+    MAX_DATASET_UPLOAD_BYTES,
+    dataset_context_note,
+    push_dataset_upload_to_hub,
+)
 from dependencies import (
     INTERNAL_HF_TOKEN_KEY,
     get_current_user,
@@ -23,43 +29,36 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
 from huggingface_hub.errors import HfHubHTTPError
 from litellm import Message, acompletion
-from pydantic import ValidationError
-from starlette.datastructures import FormData, UploadFile
-from dataset_uploads import (
-    MAX_DATASET_UPLOAD_BYTES,
-    dataset_context_note,
-    push_dataset_upload_to_hub,
-)
 from models import (
     ApprovalRequest,
     DatasetUploadResponse,
     HealthResponse,
     LLMHealthResponse,
-    SkillDetail,
-    SkillSummary,
-    SkillToggleRequest,
     SessionInfo,
     SessionNotificationsRequest,
     SessionResponse,
     SessionYoloRequest,
+    SkillDetail,
+    SkillSummary,
+    SkillToggleRequest,
     SubmitRequest,
     TruncateRequest,
 )
+from pydantic import ValidationError
 from session_manager import (
     MAX_SESSIONS,
     AgentSession,
     SessionCapacityError,
     session_manager,
 )
+from starlette.datastructures import FormData, UploadFile
 
-import user_quotas
-
+from agent.core import skills as user_skills
 from agent.core.hf_tokens import resolve_hf_request_token, resolve_hf_router_token
 from agent.core.llm_params import (
     _resolve_llm_params,
     use_custom_inference_openai_key_env,
 )
-from agent.core import skills as user_skills
 
 logger = logging.getLogger(__name__)
 
@@ -489,7 +488,7 @@ async def create_session(
             is_pro=user.get("plan") == "pro",
         )
     except SessionCapacityError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
     return SessionResponse(
         session_id=session_id,
@@ -532,15 +531,15 @@ async def restore_session_summary(
             is_pro=user.get("plan") == "pro",
         )
     except SessionCapacityError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
     try:
         summarized = await session_manager.seed_from_summary(session_id, messages)
     except ValueError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
     except Exception as e:
         logger.exception("seed_from_summary failed")
-        raise HTTPException(status_code=500, detail=f"Summary failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Summary failed: {e}") from e
 
     logger.info(
         f"Seeded session {session_id} for {user.get('username', 'unknown')} "
@@ -606,7 +605,7 @@ async def set_session_notifications(
             session_id, body.destinations
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     await session_manager.persist_session_snapshot(agent_session)
     return {
         "session_id": session_id,
@@ -682,13 +681,13 @@ async def upload_session_dataset(
             getattr(e.response, "status_code", None),
             getattr(e, "request_id", None),
         )
-        raise _dataset_upload_hub_http_exception(e)
-    except Exception:
+        raise _dataset_upload_hub_http_exception(e) from e
+    except Exception as e:
         logger.exception("Dataset upload failed for session %s", session_id)
         raise HTTPException(
             status_code=502,
             detail="Dataset upload failed. Please try again.",
-        )
+        ) from e
     finally:
         if file is not None:
             await file.close()
@@ -710,7 +709,7 @@ async def set_session_yolo(
             cap_provided="cost_cap_usd" in body.model_fields_set,
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"session_id": session_id, **summary}
 
 
@@ -752,7 +751,7 @@ async def get_skill(name: str, user: dict = Depends(get_current_user)) -> SkillD
     try:
         skill = user_skills.get_skill(user["user_id"], name)
     except user_skills.SkillError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     if skill is None:
         raise HTTPException(status_code=404, detail="Skill not found")
     return SkillDetail(**skill.detail())
@@ -770,7 +769,7 @@ async def toggle_skill(
             user["user_id"], name, enabled=request.enabled
         )
     except user_skills.SkillError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     refreshed = await session_manager.refresh_user_skill_prompts(user["user_id"])
     logger.info(
         "Skill %s enabled=%s for user %s; refreshed %d sessions",
@@ -825,7 +824,7 @@ async def submit_input(
     try:
         payload = await request.json()
     except (json.JSONDecodeError, TypeError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not isinstance(payload, dict):
         raise HTTPException(status_code=422, detail="Body must be a JSON object")
     raw_session_id = payload.get("session_id")
@@ -1031,7 +1030,7 @@ def _sse_response(
                     msg = await asyncio.wait_for(
                         event_queue.get(), timeout=_SSE_KEEPALIVE_SECONDS
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # SSE comment — ignored by parsers, keeps connection alive
                     yield ": keepalive\n\n"
                     continue
@@ -1138,7 +1137,7 @@ async def truncate_session(
         # instead of a string-stringified Pydantic dump.
         raise RequestValidationError(exc.errors()) from exc
     except (json.JSONDecodeError, TypeError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     success = await session_manager.truncate(session_id, body.user_message_index)
     if not success:
         raise HTTPException(

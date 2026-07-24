@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from agent.config import load_config
 from agent.core.agent_loop import process_submission
@@ -28,7 +28,7 @@ class Operation:
     """Operation to be executed by the agent."""
 
     op_type: OpType
-    data: Optional[dict[str, Any]] = None
+    data: dict[str, Any] | None = None
 
 
 @dataclass
@@ -952,7 +952,7 @@ class SessionManager:
                 asyncio.gather(*tasks, return_exceptions=True),
                 timeout=SANDBOX_SHUTDOWN_CLEANUP_TIMEOUT_S,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "Timed out after %.0fs cleaning up sandboxes on shutdown; "
                 "orphan sweeper will handle any stragglers",
@@ -1002,7 +1002,7 @@ class SessionManager:
                             await self.persist_session_snapshot(agent_session)
                         if not should_continue:
                             break
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         continue
                     except asyncio.CancelledError:
                         logger.info(f"Session {session_id} cancelled")
@@ -1114,7 +1114,7 @@ class SessionManager:
                     # Wait for task to complete
                     try:
                         await asyncio.wait_for(agent_session.task, timeout=5.0)
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         agent_session.task.cancel()
 
         return success

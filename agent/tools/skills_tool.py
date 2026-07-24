@@ -7,7 +7,6 @@ from typing import Any
 
 from agent.core import skills
 
-
 SKILLS_LIST_TOOL_SPEC = {
     "name": "skills_list",
     "description": (

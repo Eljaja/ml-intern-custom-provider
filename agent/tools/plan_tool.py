@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any
 
 from agent.core.session import Event
 from agent.utils.terminal_display import format_plan_tool_output
@@ -6,7 +6,7 @@ from agent.utils.terminal_display import format_plan_tool_output
 from .types import ToolResult
 
 # In-memory storage for the current plan (raw structure from agent)
-_current_plan: List[Dict[str, str]] = []
+_current_plan: list[dict[str, str]] = []
 
 
 def reset_current_plan() -> None:
@@ -22,7 +22,7 @@ class PlanTool:
     def __init__(self, session: Any = None):
         self.session = session
 
-    async def execute(self, params: Dict[str, Any]) -> ToolResult:
+    async def execute(self, params: dict[str, Any]) -> ToolResult:
         """
         Execute the WritePlan operation.
 
@@ -87,7 +87,7 @@ class PlanTool:
         }
 
 
-def get_current_plan() -> List[Dict[str, str]]:
+def get_current_plan() -> list[dict[str, str]]:
     """Get the current plan (raw structure)."""
     return _current_plan
 
@@ -135,7 +135,7 @@ PLAN_TOOL_SPEC = {
 
 
 async def plan_tool_handler(
-    arguments: Dict[str, Any], session: Any = None
+    arguments: dict[str, Any], session: Any = None
 ) -> tuple[str, bool]:
     tool = PlanTool(session=session)
     result = await tool.execute(arguments)

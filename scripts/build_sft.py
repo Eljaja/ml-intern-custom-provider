@@ -39,7 +39,7 @@ import logging
 import os
 import sys
 import tempfile
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from typing import Iterable
 
 # Make ``agent`` importable when this script is run outside the project venv.
@@ -74,7 +74,7 @@ def _download_and_parse(repo_id: str, path: str, token: str) -> dict | None:
         logger.warning("hf_hub_download(%s) failed: %s", path, e)
         return None
     try:
-        with open(local, "r") as f:
+        with open(local) as f:
             line = f.readline().strip()
         if not line:
             return None
@@ -206,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.date:
         target_days = [date.fromisoformat(args.date)]
     else:
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         target_days = [today - timedelta(days=i) for i in range(1, args.days + 1)]
 
     total = 0

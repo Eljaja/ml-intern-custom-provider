@@ -23,7 +23,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -72,7 +72,7 @@ Return valid JSON only. Do not use Markdown fences.
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def default_output_dir(now: datetime | None = None) -> Path:
@@ -298,10 +298,7 @@ def _paginated_json(
 def _labels(raw_labels: list[Any]) -> list[str]:
     labels: list[str] = []
     for label in raw_labels or []:
-        if isinstance(label, dict):
-            name = label.get("name")
-        else:
-            name = str(label)
+        name = label.get("name") if isinstance(label, dict) else str(label)
         if name:
             labels.append(str(name))
     return labels

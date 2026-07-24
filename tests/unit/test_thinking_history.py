@@ -6,8 +6,8 @@ from litellm import ChatCompletionMessageToolCall, Message
 from agent.core import agent_loop
 from agent.core.agent_loop import (
     LLMResult,
-    _call_llm_streaming,
     _assistant_message_from_result,
+    _call_llm_streaming,
     _extract_thinking_state,
 )
 

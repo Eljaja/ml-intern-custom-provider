@@ -566,8 +566,8 @@ class Sandbox:
         token: str | None = None,
         secrets: dict[str, str] | None = None,
         wait_timeout: int = WAIT_TIMEOUT,
-        log: "Callable[[str], object] | None" = None,
-        cancel_event: "Any | None" = None,
+        log: Callable[[str], object] | None = None,
+        cancel_event: Any | None = None,
     ) -> Sandbox:
         """
         Create a new sandbox by duplicating the template Space.

@@ -17,22 +17,22 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import litellm
 from dotenv import load_dotenv
 from prompt_toolkit import PromptSession
 
 from agent.config import load_config
-from agent.core.llm_params import model_uses_custom_inference_endpoint
-from agent.project_root import find_project_root
-from agent.core.agent_loop import submission_loop
 from agent.core import model_switcher
+from agent.core.agent_loop import submission_loop
 from agent.core.hf_tokens import resolve_hf_token
+from agent.core.llm_params import model_uses_custom_inference_endpoint
 from agent.core.local_models import is_local_model_id
 from agent.core.session import OpType
 from agent.core.tools import ToolRouter
 from agent.messaging.gateway import NotificationGateway
+from agent.project_root import find_project_root
 from agent.utils.terminal_display import (
     get_console,
     print_approval_header,
@@ -134,8 +134,8 @@ def _get_hf_user(token: str | None) -> str | None:
 
 async def _prompt_and_save_hf_token(prompt_session: PromptSession) -> str:
     """Prompt user for HF token, validate it, save via huggingface_hub.login(). Loops until valid."""
-    from prompt_toolkit.formatted_text import HTML
     from huggingface_hub import HfApi, login
+    from prompt_toolkit.formatted_text import HTML
 
     print("\nA Hugging Face token is required.")
     print("Get one at: https://huggingface.co/settings/tokens\n")
@@ -181,7 +181,7 @@ class Operation:
     """Operation to be executed by the agent"""
 
     op_type: OpType
-    data: Optional[dict[str, Any]] = None
+    data: dict[str, Any] | None = None
 
 
 @dataclass
@@ -784,12 +784,12 @@ async def _resume_picker(
     Returns ``None`` if the user cancels, no logs exist, or the argument
     matches nothing — already prints the explanation in those cases.
     """
+    from agent.core.session import DEFAULT_SESSION_LOG_DIR
     from agent.core.session_resume import (
         format_session_log_entry,
         list_session_logs,
         resolve_session_log_arg,
     )
-    from agent.core.session import DEFAULT_SESSION_LOG_DIR
 
     console = get_console()
     directory = DEFAULT_SESSION_LOG_DIR
@@ -1331,7 +1331,7 @@ async def main(model: str | None = None, sandbox_tools: bool = False):
     # or the agent will block on event_queue.put)
     try:
         await asyncio.wait_for(agent_task, timeout=10.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         agent_task.cancel()
         # Agent didn't shut down cleanly — close MCP explicitly
         await tool_router.__aexit__(None, None, None)
@@ -1569,7 +1569,7 @@ async def headless_main(
 
     try:
         await asyncio.wait_for(agent_task, timeout=10.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         agent_task.cancel()
         await tool_router.__aexit__(None, None, None)
     finally:

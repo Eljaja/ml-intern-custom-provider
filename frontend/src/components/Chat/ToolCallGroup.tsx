@@ -649,7 +649,7 @@ export default function ToolCallGroup({ tools, approveTools }: ToolCallGroupProp
   useSecondTick(anyResearchRunning);
 
   const isProcessing = useAgentStore(s => s.isProcessing);
-  const { setRightPanelOpen, setLeftSidebarOpen } = useLayoutStore();
+  const { setRightPanelOpen } = useLayoutStore();
 
   // ── Batch approval state ──────────────────────────────────────────
   const pendingTools = useMemo(
@@ -837,7 +837,7 @@ export default function ToolCallGroup({ tools, approveTools }: ToolCallGroupProp
         setRightPanelOpen(true);
       }
     },
-    [toolDisplayMap, setPanel, getEditedScript, setRightPanelOpen, setLeftSidebarOpen],
+    [toolDisplayMap, setPanel, setRightPanelOpen],
   );
 
   // ── Panel click handler ───────────────────────────────────────────

@@ -24,8 +24,14 @@ frontend/dist
 .idea
 *.log
 
-# Do not ship local secrets in build context; pass at runtime: docker compose --env-file .env
-# .env
+# Do not ship local secrets in the build context. They are passed at runtime
+# instead: docker-compose.yaml uses `env_file: .env`, which is read when the
+# container starts, not when the image is built — so excluding them here costs
+# nothing. The line below was previously commented out, which meant the comment
+# described an intent the file did not enforce.
+.env
+.env.*
+!.env.example
 
 # Large / dev-only
 **/*.pyc

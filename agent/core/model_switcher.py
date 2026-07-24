@@ -27,7 +27,6 @@ from agent.core.local_models import (
     is_reserved_local_model_id,
 )
 
-
 # Suggested models shown by `/model` (not a gate). Users can paste any HF
 # model id (e.g. "MiniMaxAI/MiniMax-M2.7") or an `anthropic/` / `openai/`
 # prefix for direct API access. For HF ids, append ":fastest" /

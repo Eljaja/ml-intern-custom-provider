@@ -97,7 +97,7 @@ import os
 import sys
 import tempfile
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Iterable
 
 logger = logging.getLogger("build_kpis")
@@ -124,7 +124,7 @@ def _parse_ts(s: Any) -> datetime | None:
         return None
     # Normalise to aware UTC so comparisons work against window bounds.
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt
 
 
@@ -158,7 +158,7 @@ def _download_session(repo_id: str, path: str, token: str) -> dict | None:
         logger.warning("hf_hub_download(%s) failed: %s", path, e)
         return None
     try:
-        with open(local, "r") as f:
+        with open(local) as f:
             line = f.readline().strip()
         if not line:
             return None
@@ -582,7 +582,7 @@ def run_for_hour(
     midnight land in the right hourly bucket.
     """
     if hour_dt.tzinfo is None:
-        hour_dt = hour_dt.replace(tzinfo=timezone.utc)
+        hour_dt = hour_dt.replace(tzinfo=UTC)
     window_start = hour_dt.replace(minute=0, second=0, microsecond=0)
     window_end = window_start + timedelta(hours=1)
 
@@ -643,7 +643,7 @@ def _parse_hour_arg(s: str) -> datetime:
     """Accept ``YYYY-MM-DDTHH`` or full ISO — always pinned to the start of the hour, UTC."""
     dt = datetime.fromisoformat(s)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt.replace(minute=0, second=0, microsecond=0)
 
 
@@ -703,7 +703,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.datetime:
         target_hours = [_parse_hour_arg(args.datetime)]
     else:
-        now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
         # Roll up *completed* hours: start from the hour before ``now``.
         target_hours = [now - timedelta(hours=i) for i in range(1, args.hours + 1)]
 

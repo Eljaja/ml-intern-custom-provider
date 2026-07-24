@@ -8,6 +8,7 @@ subprocess/pathlib instead of going through a remote sandbox.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import subprocess
@@ -16,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 from agent.core.hub_artifacts import wrap_shell_command_with_hub_artifact_bootstrap
-
 
 MAX_OUTPUT_CHARS = 25_000
 MAX_LINE_LENGTH = 4000
@@ -129,7 +129,11 @@ async def _bash_handler(
     )
     timeout = min(args.get("timeout") or DEFAULT_TIMEOUT, MAX_TIMEOUT)
     try:
-        result = subprocess.run(
+        # Off the event loop: MAX_TIMEOUT is 10 hours, and on the web backend
+        # (AGENT_LOCAL_MODE=1) a blocking subprocess.run would freeze every
+        # other session's SSE stream for the whole duration of the command.
+        result = await asyncio.to_thread(
+            subprocess.run,
             command,
             shell=True,
             capture_output=True,

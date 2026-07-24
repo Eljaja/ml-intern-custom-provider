@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -73,7 +73,7 @@ def test_backfill_calls_run_hour_for_each_hour(monkeypatch):
     # All aligned to the top of the hour
     for c in calls:
         assert c.minute == 0 and c.second == 0 and c.microsecond == 0
-        assert c.tzinfo == timezone.utc
+        assert c.tzinfo == UTC
 
 
 def test_start_is_no_op_when_disabled(monkeypatch):

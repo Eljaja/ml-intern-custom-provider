@@ -1,6 +1,6 @@
 import importlib.util
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -318,7 +318,7 @@ def test_hf_discussion_event_normalization():
         title="Space fails",
         status="open",
         author="alice",
-        created_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        created_at=datetime(2026, 5, 1, tzinfo=UTC),
     )
     details = SimpleNamespace(
         title="Space fails",
@@ -329,21 +329,21 @@ def test_hf_discussion_event_normalization():
                 content="Initial report",
                 hidden=False,
                 author="alice",
-                created_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+                created_at=datetime(2026, 5, 1, tzinfo=UTC),
             ),
             SimpleNamespace(
                 type="comment",
                 content="Hidden moderation",
                 hidden=True,
                 author="mod",
-                created_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+                created_at=datetime(2026, 5, 1, tzinfo=UTC),
             ),
             SimpleNamespace(
                 type="comment",
                 content="Maintainer reply",
                 hidden=False,
                 author="bob",
-                created_at=datetime(2026, 5, 2, tzinfo=timezone.utc),
+                created_at=datetime(2026, 5, 2, tzinfo=UTC),
             ),
             SimpleNamespace(type="status-change", new_status="open"),
         ],
@@ -705,9 +705,7 @@ def test_render_markdown_report_from_sample_ranking():
 def test_cli_defaults_without_live_network_or_llm():
     mod = _load()
     args = mod.parse_args([])
-    out = mod.resolve_output_dir(
-        None, now=datetime(2026, 5, 4, 12, 30, tzinfo=timezone.utc)
-    )
+    out = mod.resolve_output_dir(None, now=datetime(2026, 5, 4, 12, 30, tzinfo=UTC))
 
     assert args.github_repo == "huggingface/ml-intern"
     assert args.hf_space == "smolagents/ml-intern"

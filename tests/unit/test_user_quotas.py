@@ -13,7 +13,11 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 import user_quotas  # noqa: E402
-from agent.core.session_persistence import NoopSessionStore, _reset_store_for_tests  # noqa: E402
+
+from agent.core.session_persistence import (  # noqa: E402
+    NoopSessionStore,
+    _reset_store_for_tests,
+)
 
 
 @pytest.fixture(autouse=True)

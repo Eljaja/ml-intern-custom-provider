@@ -8,8 +8,8 @@ import random
 import time
 
 from rich.console import Console
-from rich.text import Text
 from rich.live import Live
+from rich.text import Text
 
 from agent.utils.boot_timing import settle_curve
 

@@ -5,7 +5,7 @@ Lists all files in a repository and performs deterministic keyword search.
 """
 
 import os
-from typing import Any, Dict, List
+from typing import Any
 
 import requests
 from thefuzz import fuzz
@@ -53,7 +53,7 @@ EXAMPLE_PATTERNS = [
 ]
 
 
-def _get_repo_tree(org: str, repo: str, token: str) -> tuple[List[Dict[str, Any]], str]:
+def _get_repo_tree(org: str, repo: str, token: str) -> tuple[list[dict[str, Any]], str]:
     """Get all files in a repository recursively. Returns (files, error_message)"""
     headers = {
         "Accept": "application/vnd.github+json",
@@ -109,7 +109,7 @@ def _get_repo_tree(org: str, repo: str, token: str) -> tuple[List[Dict[str, Any]
         return [], f"Error processing tree: {str(e)}"
 
 
-def _search_similar_repos(org: str, repo: str, token: str) -> List[Dict[str, Any]]:
+def _search_similar_repos(org: str, repo: str, token: str) -> list[dict[str, Any]]:
     """Search for similar repository names in the organization"""
     headers = {
         "Accept": "application/vnd.github+json",
@@ -208,7 +208,7 @@ def _get_pattern_priority(file_path: str) -> tuple[int, int, int]:
 
 
 def _handle_repo_tree_errors(
-    all_files: List[Dict[str, Any]],
+    all_files: list[dict[str, Any]],
     error: str,
     org: str,
     repo: str,
@@ -445,7 +445,7 @@ GITHUB_FIND_EXAMPLES_TOOL_SPEC = {
 }
 
 
-async def github_find_examples_handler(arguments: Dict[str, Any]) -> tuple[str, bool]:
+async def github_find_examples_handler(arguments: dict[str, Any]) -> tuple[str, bool]:
     """Handler for agent tool router"""
     try:
         result = find_examples(

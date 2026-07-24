@@ -7,7 +7,6 @@
 
 const isDev = import.meta.env.DEV;
 
-/* eslint-disable no-console */
 export const logger = {
   /** Debug-level log — DEV only. */
   log: (...args: unknown[]) => {

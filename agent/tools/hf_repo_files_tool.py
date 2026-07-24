@@ -5,7 +5,7 @@ Operations: list, read, upload, delete
 """
 
 import asyncio
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Literal
 
 from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
@@ -40,11 +40,11 @@ def _format_size(size_bytes: int) -> str:
 class HfRepoFilesTool:
     """Tool for file operations on HF repos."""
 
-    def __init__(self, hf_token: Optional[str] = None, session: Any = None):
+    def __init__(self, hf_token: str | None = None, session: Any = None):
         self.api = HfApi(token=hf_token)
         self.session = session
 
-    async def execute(self, args: Dict[str, Any]) -> ToolResult:
+    async def execute(self, args: dict[str, Any]) -> ToolResult:
         """Execute the specified operation."""
         operation = args.get("operation")
 
@@ -90,7 +90,7 @@ class HfRepoFilesTool:
             "resultsShared": 1,
         }
 
-    async def _list(self, args: Dict[str, Any]) -> ToolResult:
+    async def _list(self, args: dict[str, Any]) -> ToolResult:
         """List files in a repository."""
         repo_id = args.get("repo_id")
         if not repo_id:
@@ -139,7 +139,7 @@ class HfRepoFilesTool:
             "resultsShared": len(items),
         }
 
-    async def _read(self, args: Dict[str, Any]) -> ToolResult:
+    async def _read(self, args: dict[str, Any]) -> ToolResult:
         """Read file content from a repository."""
         repo_id = args.get("repo_id")
         path = args.get("path")
@@ -163,7 +163,7 @@ class HfRepoFilesTool:
         )
 
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 content = f.read()
 
             truncated = len(content) > max_chars
@@ -185,7 +185,7 @@ class HfRepoFilesTool:
                 "resultsShared": 1,
             }
 
-    async def _upload(self, args: Dict[str, Any]) -> ToolResult:
+    async def _upload(self, args: dict[str, Any]) -> ToolResult:
         """Upload content to a repository."""
         repo_id = args.get("repo_id")
         path = args.get("path")
@@ -234,7 +234,7 @@ class HfRepoFilesTool:
 
         return {"formatted": response, "totalResults": 1, "resultsShared": 1}
 
-    async def _delete(self, args: Dict[str, Any]) -> ToolResult:
+    async def _delete(self, args: dict[str, Any]) -> ToolResult:
         """Delete files from a repository."""
         repo_id = args.get("repo_id")
         patterns = args.get("patterns")
@@ -350,7 +350,7 @@ HF_REPO_FILES_TOOL_SPEC = {
 
 
 async def hf_repo_files_handler(
-    arguments: Dict[str, Any], session=None
+    arguments: dict[str, Any], session=None
 ) -> tuple[str, bool]:
     """Handler for agent tool router."""
     try:
