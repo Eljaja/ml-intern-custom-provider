@@ -525,11 +525,15 @@ def print_help() -> None:
 # ── Plan display ───────────────────────────────────────────────────────
 
 
-def format_plan_display() -> str:
-    """Format the current plan for display."""
-    from agent.tools.plan_tool import get_current_plan
+def format_plan_display(plan: list[dict[str, str]] | None) -> str:
+    """Format a plan for display.
 
-    plan = get_current_plan()
+    Takes the plan explicitly. It used to read a module-level global in
+    plan_tool that every session wrote to — harmless while only the
+    single-session CLI read it, but shared mutable state on a server that runs
+    200 concurrent sessions, and Session.new_conversation reset it for all of
+    them.
+    """
     if not plan:
         return ""
 
@@ -550,8 +554,8 @@ def format_plan_display() -> str:
     return "\n".join(lines)
 
 
-def print_plan() -> None:
-    plan_str = format_plan_display()
+def print_plan(plan: list[dict[str, str]] | None) -> None:
+    plan_str = format_plan_display(plan)
     if plan_str:
         _console.print(plan_str)
 

@@ -6,6 +6,7 @@ from litellm import Message
 
 import agent.main as main_mod
 from agent.core.agent_loop import process_submission
+from agent.core.attempt_log import unresolved_failures
 from agent.core.session import Event, OpType, Session
 from agent.tools import plan_tool
 
@@ -51,7 +52,6 @@ def _make_session() -> Session:
 
 
 def test_start_new_conversation_rotates_session_state(monkeypatch):
-    plan_tool.reset_current_plan()
     session = _make_session()
     session.config.save_sessions = True
     session.turn_count = 2
@@ -63,11 +63,6 @@ def test_start_new_conversation_rotates_session_state(monkeypatch):
     session.current_plan = [
         {"id": "old-session", "content": "old session item", "status": "pending"}
     ]
-    monkeypatch.setattr(
-        plan_tool,
-        "_current_plan",
-        [{"id": "global", "content": "global item", "status": "in_progress"}],
-    )
     old_session_id = session.session_id
     uploads: list[str] = []
 
@@ -94,7 +89,9 @@ def test_start_new_conversation_rotates_session_state(monkeypatch):
     assert session.pending_approval is None
     assert session.auto_approval_estimated_spend_usd == 0.0
     assert session.current_plan == []
-    assert plan_tool.get_current_plan() == []
+    # plan_tool no longer keeps a module-level copy; the plan is session state.
+    assert not hasattr(plan_tool, "_current_plan")
+    assert unresolved_failures(session) == []
 
 
 @pytest.mark.asyncio

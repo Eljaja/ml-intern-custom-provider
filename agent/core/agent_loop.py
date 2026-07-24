@@ -19,8 +19,8 @@ from litellm import (
 from litellm.exceptions import ContextWindowExceededError
 
 from agent.config import Config
+from agent.core import attempt_log, telemetry
 from agent.core import skills as user_skills
-from agent.core import telemetry
 from agent.core.approval_policy import normalize_tool_operation
 from agent.core.cost_estimation import CostEstimate, estimate_tool_cost
 from agent.core.doom_loop import check_for_doom_loop
@@ -42,6 +42,11 @@ _MALFORMED_TOOL_PREFIX = "ERROR: Tool call to '"
 _MALFORMED_TOOL_SUFFIX = "' had malformed JSON arguments"
 _NO_TOOL_INCOMPLETE_PLAN_RETRY_LIMIT = 2
 _SKILL_REFLECTION_MIN_TOOL_OUTPUTS = 2
+# Iteration-budget wrap-up. At this fraction of max_iterations the agent is
+# told to land the work rather than start something new. Budgets below the
+# minimum are left alone — there is no room for a warning to be actionable.
+_WRAP_UP_THRESHOLD_RATIO = 0.85
+_WRAP_UP_MIN_BUDGET = 20
 # Reflection is a bookkeeping judgement, not the user's task. Pin it low rather
 # than inheriting Config.reasoning_effort, which defaults to "max" — a full
 # thinking budget spent deciding whether to write a note to self.
@@ -108,6 +113,77 @@ def _no_tool_incomplete_plan_prompt(items: list[dict[str, str]]) -> str:
         "now. If you genuinely cannot continue, first use tools to inspect the "
         "state or verify the blocker."
     )
+
+
+def _should_warn_wrap_up(iteration: int, max_iterations: int) -> bool:
+    """True once the iteration budget crosses the wrap-up threshold.
+
+    Unlimited budgets (-1) never warn, and budgets too small for a warning to be
+    actionable are left alone.
+    """
+    if max_iterations is None or max_iterations <= 0:
+        return False
+    if max_iterations < _WRAP_UP_MIN_BUDGET:
+        return False
+    return iteration >= int(max_iterations * _WRAP_UP_THRESHOLD_RATIO)
+
+
+def _wrap_up_prompt(iteration: int, max_iterations: int) -> str:
+    remaining = max(0, max_iterations - iteration)
+    return (
+        "[SYSTEM: BUDGET NOTICE] You have used "
+        f"{iteration} of {max_iterations} allowed iterations this turn; roughly "
+        f"{remaining} remain. When they run out the turn stops immediately, "
+        "wherever you happen to be.\n"
+        "Start landing the work now:\n"
+        "  • Save or push anything not yet persisted — a partial artifact that "
+        "exists beats a complete one that was in progress.\n"
+        "  • Record where you got to and what the next step would be, so the work "
+        "is resumable.\n"
+        "  • Then report what is done, what is not, and what you would do next.\n"
+        "Do not start a new line of investigation."
+    )
+
+
+def _unresolved_failures_prompt(records: list[Any]) -> str:
+    listed = "\n".join(r.describe() for r in records[:8])
+    more = ""
+    if len(records) > 8:
+        more = f"\n- ... and {len(records) - 8} more"
+    return (
+        "[SYSTEM: COMPLETION GUARD] You are ending the turn, but operations in "
+        "this session failed and were never made to succeed:\n"
+        f"{listed}{more}\n\n"
+        "Do exactly one of these, using tools:\n"
+        "  1. Fix them, or\n"
+        "  2. Verify the end state is correct despite them — check that whatever "
+        "you claimed to produce actually exists, then say so with the evidence, or\n"
+        "  3. Tell the user plainly which parts did not work and what is affected.\n"
+        "Do not end with an unqualified success message while these are outstanding."
+    )
+
+
+def _completion_guard_prompt(session: Session) -> str | None:
+    """Deterministic end-of-turn check. Returns a corrective prompt, or None.
+
+    Termination used to be "the model stopped calling tools", with one exception
+    for an unfinished plan. Nothing noticed a turn that ended on a cheerful
+    summary while half its tool calls had failed — the system prompt asserts the
+    task is not done until the output exists, but nothing checked.
+
+    Deliberately not an LLM critic: this fires on every finishing turn, and a
+    second model call per turn is the cost we just took *out* of skill
+    reflection. Everything here is derived from recorded state.
+    """
+    unfinished_plan = _unfinished_plan_items(session)
+    if unfinished_plan:
+        return _no_tool_incomplete_plan_prompt(unfinished_plan)
+
+    failures = attempt_log.unresolved_failures(session)
+    if failures:
+        return _unresolved_failures_prompt(failures)
+
+    return None
 
 
 def _recent_messages_for_skill_reflection(session: Session, limit: int = 10) -> str:
@@ -191,12 +267,19 @@ async def _maybe_reflect_skill(
     session: Session,
     *,
     event_start_idx: int,
+    errored: bool = False,
 ) -> None:
-    """After a successful non-trivial turn, optionally create or patch a skill.
+    """After a non-trivial turn, optionally create or patch a skill.
 
     Runs detached from the turn (see the call site): it is bookkeeping for future
     sessions, so the user should not wait on a second full model round trip after
     their answer is already on screen.
+
+    ``errored`` turns are included on purpose. The system prompt tells the agent
+    to save a skill "especially after errors, corrections, or non-obvious tool
+    sequences", but the call site used to sit under ``elif not errored``, so the
+    reflector never saw a failed turn — precisely the one carrying the lesson
+    worth keeping.
     """
     if session.pending_approval or session.is_cancelled:
         return
@@ -208,14 +291,35 @@ async def _maybe_reflect_skill(
     tool_outputs, used_skill_manage = _skill_reflection_tool_stats(
         session, event_start_idx
     )
-    if used_skill_manage or tool_outputs < _SKILL_REFLECTION_MIN_TOOL_OUTPUTS:
+    if used_skill_manage:
+        return
+    failures = attempt_log.unresolved_failures(session)
+    # A failed turn is worth reflecting on even with fewer successful tool calls —
+    # the failure itself is the material.
+    if tool_outputs < _SKILL_REFLECTION_MIN_TOOL_OUTPUTS and not (errored or failures):
         return
 
     summaries = user_skills.enabled_skill_summaries(session.user_id)
+    if errored or failures:
+        framing = (
+            "The latest turn FAILED or left operations broken. Capture the lesson "
+            "so a future session does not repeat it: what was attempted, what went "
+            "wrong, and the check or alternative that should be used instead. A "
+            "known dead end is as valuable as a working recipe.\n"
+        )
+        failure_context = attempt_log.format_block(
+            session, header="Unresolved failures in this session:"
+        )
+    else:
+        framing = (
+            "Decide whether the latest turn contains a reusable multi-step "
+            "workflow worth saving or an improvement to an existing skill.\n"
+        )
+        failure_context = ""
+
     prompt = (
         "You are maintaining procedural skills for future runs of this web agent.\n"
-        "Decide whether the latest turn contains a reusable multi-step workflow worth "
-        "saving or an improvement to an existing skill.\n\n"
+        f"{framing}\n"
         "Return ONLY compact JSON with one of these shapes:\n"
         '{"action":"noop"}\n'
         '{"action":"create","name":"lowercase-slug","description":"short summary",'
@@ -223,12 +327,13 @@ async def _maybe_reflect_skill(
         '{"action":"patch","name":"existing-skill","old_string":"exact text",'
         '"new_string":"replacement text"}\n\n'
         "Rules:\n"
-        "- Save procedures, not one-off facts.\n"
+        "- Save procedures and known dead ends, not one-off facts.\n"
         "- Do not include secrets, tokens, credentials, or private user data.\n"
-        "- Prefer noop unless the workflow is clearly reusable.\n"
+        "- Prefer noop unless the lesson is clearly reusable.\n"
         "- Patch only when old_string can be copied exactly from the existing skill.\n\n"
         f"Existing enabled skills:\n{json.dumps(summaries, indent=2)}\n\n"
-        f"Recent conversation/tool context:\n{_recent_messages_for_skill_reflection(session)}"
+        + (f"{failure_context}\n\n" if failure_context else "")
+        + f"Recent conversation/tool context:\n{_recent_messages_for_skill_reflection(session)}"
     )
 
     try:
@@ -1432,10 +1537,36 @@ class Handlers:
         no_tool_incomplete_plan_retries = 0
         event_start_idx = len(session.logged_events)
 
+        wrap_up_warned = False
+
         while max_iterations == -1 or iteration < max_iterations:
             # ── Cancellation check: before LLM call ──
             if session.is_cancelled:
                 break
+
+            # Tell the model when its iteration budget is nearly gone. The counter
+            # was purely internal, so a long autonomous run could be guillotined
+            # at 297/300 mid-step with no chance to save a checkpoint or hand off.
+            if not wrap_up_warned and _should_warn_wrap_up(iteration, max_iterations):
+                wrap_up_warned = True
+                session.context_manager.add_message(
+                    Message(
+                        role="user",
+                        content=_wrap_up_prompt(iteration, max_iterations),
+                    )
+                )
+                await session.send_event(
+                    Event(
+                        event_type="tool_log",
+                        data={
+                            "tool": "system",
+                            "log": (
+                                f"Iteration budget {iteration}/{max_iterations} — "
+                                "asked the agent to start wrapping up."
+                            ),
+                        },
+                    )
+                )
 
             # Compact before calling the LLM if context is near the limit.
             # When _compact_and_notify catches CompactionFailedError it sets
@@ -1579,15 +1710,16 @@ class Handlers:
 
                 # If no tool calls, add assistant message and we're done
                 if not tool_calls:
-                    unfinished_plan = _unfinished_plan_items(session)
-                    if (
-                        unfinished_plan
-                        and no_tool_incomplete_plan_retries
+                    guard_prompt = (
+                        _completion_guard_prompt(session)
+                        if no_tool_incomplete_plan_retries
                         < _NO_TOOL_INCOMPLETE_PLAN_RETRY_LIMIT
-                    ):
+                        else None
+                    )
+                    if guard_prompt is not None:
                         logger.info(
-                            "No tool calls with unfinished plan; retrying agent turn "
-                            "(attempt %d/%d)",
+                            "Completion guard tripped on a text-only response; "
+                            "retrying agent turn (attempt %d/%d)",
                             no_tool_incomplete_plan_retries + 1,
                             _NO_TOOL_INCOMPLETE_PLAN_RETRY_LIMIT,
                         )
@@ -1600,12 +1732,7 @@ class Handlers:
                                 assistant_msg, token_count
                             )
                         session.context_manager.add_message(
-                            Message(
-                                role="user",
-                                content=_no_tool_incomplete_plan_prompt(
-                                    unfinished_plan
-                                ),
-                            )
+                            Message(role="user", content=guard_prompt)
                         )
                         no_tool_incomplete_plan_retries += 1
                         await session.send_event(
@@ -1614,9 +1741,9 @@ class Handlers:
                                 data={
                                     "tool": "system",
                                     "log": (
-                                        "Plan still has unfinished items after a "
-                                        "text-only response — retrying instead of "
-                                        "returning to the prompt."
+                                        "Turn ended with unfinished plan items or "
+                                        "unresolved tool failures — retrying instead "
+                                        "of returning to the prompt."
                                     ),
                                 },
                             )
@@ -1839,7 +1966,16 @@ class Handlers:
                     results = gather_task.result()
 
                     # 4. Record results and send outputs (order preserved)
-                    for tc, tool_name, _tool_args, output, success in results:
+                    for tc, tool_name, tool_args, output, success in results:
+                        # Ledger lives on the session, so it outlives compaction
+                        # (see agent.core.attempt_log).
+                        if success:
+                            attempt_log.record_success(session, tool_name)
+                        else:
+                            attempt_log.record_failure(
+                                session, tool_name, tool_args, output, iteration
+                            )
+
                         tool_msg = Message(
                             role="tool",
                             content=output,
@@ -1951,15 +2087,23 @@ class Handlers:
         if session.is_cancelled:
             await _cleanup_on_cancel(session)
             await session.send_event(Event(event_type="interrupted"))
-        elif not errored:
+        else:
             # Detached on purpose: reflection is a second full model round trip
             # whose only output is a note for *future* sessions. Awaiting it here
             # made every user wait for it after their answer was already
             # rendered. Kept on the session so shutdown can await/cancel it.
+            #
+            # Runs on errored turns too — a failure is the lesson most worth
+            # keeping, and this used to sit under `elif not errored`, so the
+            # reflector never saw one.
             session.spawn_background_task(
-                _maybe_reflect_skill(session, event_start_idx=event_start_idx),
+                _maybe_reflect_skill(
+                    session, event_start_idx=event_start_idx, errored=errored
+                ),
                 name="skill-reflection",
             )
+
+        if not session.is_cancelled and not errored:
             await session.send_event(
                 Event(
                     event_type="turn_complete",
@@ -2198,6 +2342,12 @@ class Handlers:
 
                 if was_edited:
                     output = f"[Note: The user edited the script before execution. The output below reflects the user-modified version, not your original script.]\n\n{output}"
+
+                # Same ledger bookkeeping as the non-approval path above.
+                if success:
+                    attempt_log.record_success(session, tool_name)
+                else:
+                    attempt_log.record_failure(session, tool_name, None, output)
 
                 # Add tool result to context
                 tool_msg = Message(

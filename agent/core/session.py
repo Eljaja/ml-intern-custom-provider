@@ -442,10 +442,10 @@ class Session:
         if self.config.save_sessions and previous_non_system_count:
             saved_path = self.save_and_upload_detached(self.config.session_dataset_repo)
 
-        from agent.tools.plan_tool import reset_current_plan
-
         self.current_plan = []
-        reset_current_plan()
+        from agent.core.attempt_log import clear as clear_attempt_log
+
+        clear_attempt_log(self)
 
         system_msg = self._fresh_system_message()
         self.context_manager.items = [system_msg] if system_msg is not None else []

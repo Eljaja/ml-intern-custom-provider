@@ -70,12 +70,30 @@ def _get_hf_username(hf_token: str | None = None) -> str:
         return "unknown"
 
 
+# Mid-task compaction. The reader is the agent itself, a few tokens later, still
+# holding the same job — not a newcomer being briefed. The previous wording
+# ("summary ... given to someone who has never worked on this project before")
+# produced a readable narrative that dropped exactly what the agent needs to keep
+# working: the identifiers it had established, and which approaches it had already
+# ruled out. Losing the second one is what lets a compacted agent cheerfully
+# retry a command that failed four times before.
 _COMPACT_PROMPT = (
-    "Please provide a concise summary of the conversation above, focusing on "
-    "key decisions, the 'why' behind the decisions, problems solved, and "
-    "important context needed for developing further. Your summary will be "
-    "given to someone who has never worked on this project before and they "
-    "will be have to be filled in."
+    "The conversation above is about to be replaced by your summary of it. You "
+    "are the one who will read it, and you are still mid-task. Write a note to "
+    "your immediate future self, in first person. Include:\n"
+    "  • The user's original request, and what is done versus outstanding.\n"
+    "  • Exact identifiers you established: repo ids, Space ids, dataset names, "
+    "file paths, run and project names, model ids, branch names. Copy them "
+    "verbatim — you will not be able to look them up again.\n"
+    "  • What you already TRIED AND RULED OUT, with the reason. Be specific: "
+    "'flash-attn wheel build fails on this CUDA/torch pair' beats 'had install "
+    "problems'. This is the part you will most regret losing.\n"
+    "  • Numbers that matter: metrics reached, hyperparameters settled on, "
+    "dataset column names and sizes.\n"
+    "  • Key decisions and why you made them.\n"
+    "  • The next concrete step you intended to take.\n\n"
+    "Do not editorialise and do not summarise for readability. Density over "
+    "prose. Anything you leave out is gone."
 )
 
 # Per-message ceiling. If a single message in the "untouched" tail is larger
@@ -649,9 +667,15 @@ class ContextManager:
             session=session,
             kind="compaction",
         )
+        # Append the failure ledger verbatim rather than trusting the summary to
+        # have kept it. It is the part a readable summary drops first and the part
+        # a compacted agent most needs — see agent.core.attempt_log.
+        from agent.core.attempt_log import format_block
+
+        failures = format_block(session)
         summarized_message = Message(
             role="assistant",
-            content=summary,
+            content=f"{summary}\n\n{failures}" if failures else summary,
         )
 
         # Reconstruct: system + first user msg + summary + recent messages

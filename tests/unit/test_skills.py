@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.context_manager.manager import ContextManager
-from agent.core import skills
+from agent.core import attempt_log, skills
 from agent.core.agent_loop import _maybe_reflect_skill
 from agent.tools.skills_tool import skill_manage_handler, skill_view_handler
 from backend.models import SkillSummary
@@ -525,3 +525,92 @@ def test_concurrent_updates_do_not_lose_each_other(tmp_path, monkeypatch):
         t.join()
 
     assert skills.get_skill("user", "hot").use_count == 8
+
+
+@pytest.mark.asyncio
+async def test_reflection_runs_on_a_failed_turn(tmp_path, monkeypatch):
+    """The prompt asks for skills 'especially after errors' — so errors must reach it."""
+    monkeypatch.setenv("ML_INTERN_SKILLS_DIR", str(tmp_path))
+
+    seen_prompts = []
+
+    class FakeChoice:
+        finish_reason = "stop"
+        message = SimpleNamespace(content='{"action":"noop"}')
+
+    async def fake_acompletion(**kwargs):
+        seen_prompts.append(kwargs["messages"][-1]["content"])
+        return SimpleNamespace(choices=[FakeChoice()])
+
+    class FakeEnv:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *_a):
+            return None
+
+    monkeypatch.setattr("agent.core.agent_loop.acompletion", fake_acompletion)
+    monkeypatch.setattr(
+        "agent.core.agent_loop._resolve_llm_params", lambda *_a, **_k: {"model": "m"}
+    )
+    monkeypatch.setattr(
+        "agent.core.agent_loop.use_custom_inference_openai_key_env",
+        lambda *_a, **_k: FakeEnv(),
+    )
+
+    async def send_event(_event):
+        return None
+
+    session = SimpleNamespace(
+        pending_approval=None,
+        is_cancelled=False,
+        user_id="user",
+        logged_events=[
+            # Only one successful tool output — below the usual threshold.
+            {"event_type": "tool_output", "data": {"tool": "bash", "success": True}},
+        ],
+        context_manager=SimpleNamespace(
+            items=[SimpleNamespace(role="user", content="do the thing")]
+        ),
+        config=SimpleNamespace(model_name="m", skill_reflection=True),
+        hf_token=None,
+        effective_effort_for=lambda _m: None,
+        refresh_system_prompt=lambda: None,
+        send_event=send_event,
+    )
+    attempt_log.record_failure(session, "bash", {"command": "boom"}, "exit 1")
+
+    await _maybe_reflect_skill(session, event_start_idx=0, errored=True)
+
+    assert seen_prompts, "reflection must run on a failed turn"
+    prompt = seen_prompts[0]
+    assert "FAILED" in prompt
+    assert "known dead end" in prompt
+    assert "exit 1" in prompt, "the failure itself is the material"
+
+
+@pytest.mark.asyncio
+async def test_reflection_still_skips_a_trivial_clean_turn(tmp_path, monkeypatch):
+    monkeypatch.setenv("ML_INTERN_SKILLS_DIR", str(tmp_path))
+
+    called = False
+
+    async def fail_acompletion(**_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("should not reflect on a trivial clean turn")
+
+    monkeypatch.setattr("agent.core.agent_loop.acompletion", fail_acompletion)
+
+    session = SimpleNamespace(
+        pending_approval=None,
+        is_cancelled=False,
+        user_id="user",
+        logged_events=[
+            {"event_type": "tool_output", "data": {"tool": "bash", "success": True}},
+        ],
+        config=SimpleNamespace(model_name="m", skill_reflection=True),
+    )
+
+    await _maybe_reflect_skill(session, event_start_idx=0, errored=False)
+    assert called is False

@@ -142,6 +142,6 @@ async def test_no_tool_response_retries_when_plan_is_incomplete(monkeypatch):
         events.append(await event_queue.get())
     assert any(
         event.event_type == "tool_log"
-        and "text-only response" in (event.data or {}).get("log", "")
+        and "unresolved tool failures" in (event.data or {}).get("log", "")
         for event in events
     )

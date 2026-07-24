@@ -5,16 +5,6 @@ from agent.utils.terminal_display import format_plan_tool_output
 
 from .types import ToolResult
 
-# In-memory storage for the current plan (raw structure from agent)
-_current_plan: list[dict[str, str]] = []
-
-
-def reset_current_plan() -> None:
-    """Clear the CLI-visible in-memory plan."""
-    global _current_plan
-
-    _current_plan = []
-
 
 class PlanTool:
     """Tool for managing a list of todos with status tracking."""
@@ -33,8 +23,6 @@ class PlanTool:
         Returns:
             ToolResult with formatted output
         """
-        global _current_plan
-
         todos = params.get("todos", [])
 
         # Validate todos structure
@@ -64,7 +52,6 @@ class PlanTool:
         # Store a session-scoped copy so the runtime can tell whether a
         # text-only model response is trying to stop while work remains.
         stored_todos = [dict(todo) for todo in todos]
-        _current_plan = stored_todos
         if self.session is not None:
             self.session.current_plan = stored_todos
 
@@ -85,11 +72,6 @@ class PlanTool:
             "totalResults": len(todos),
             "isError": False,
         }
-
-
-def get_current_plan() -> list[dict[str, str]]:
-    """Get the current plan (raw structure)."""
-    return _current_plan
 
 
 # Tool specification
