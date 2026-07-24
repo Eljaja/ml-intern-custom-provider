@@ -52,6 +52,28 @@ _SKILL_REFLECTION_TIMEOUT_S = 120
 _SKILL_REFLECTION_SNIPPET_CHARS = 3000
 
 
+async def _sleep_or_cancel(session: Session, delay: float) -> bool:
+    """Sleep for a retry backoff, waking early if the user interrupts.
+
+    Returns True if the session was cancelled. A plain asyncio.sleep here meant
+    Stop appeared to hang for the whole backoff (up to tens of seconds) before
+    anything reacted.
+    """
+    if session.is_cancelled:
+        return True
+
+    cancel_event = getattr(session, "_cancelled", None)
+    if cancel_event is None or not hasattr(cancel_event, "wait"):
+        await asyncio.sleep(delay)
+        return session.is_cancelled
+
+    try:
+        await asyncio.wait_for(cancel_event.wait(), timeout=delay)
+    except TimeoutError:
+        return session.is_cancelled
+    return True
+
+
 def _unfinished_plan_items(session: Session) -> list[dict[str, str]]:
     plan = getattr(session, "current_plan", None) or []
     unfinished: list[dict[str, str]] = []
@@ -1021,13 +1043,40 @@ def _assistant_message_from_result(
 async def _call_llm_streaming(
     session: Session, messages, tools, llm_params
 ) -> LLMResult:
-    """Call the LLM with streaming, emitting assistant_chunk events."""
-    response = None
+    """Call the LLM with streaming, emitting assistant_chunk events.
+
+    The stream is consumed *inside* the retry loop. It used to be read after the
+    loop had already broken out, so a read timeout or dropped connection part-way
+    through a response killed the whole turn even though the request itself was
+    retryable.
+
+    One limit, deliberate: once a chunk has been forwarded to the client we stop
+    retrying and let the error surface. A fresh attempt would replay text the user
+    can already see, and there is no protocol for retracting an emitted chunk.
+    """
     _healed_effort = False  # one-shot safety net per call
     _healed_thinking_signature = False
     messages, tools = with_prompt_caching(messages, tools, llm_params.get("model"))
     t_start = time.monotonic()
+
+    full_content = ""
+    tool_calls_acc: dict[int, dict] = {}
+    token_count = 0
+    finish_reason = None
+    final_usage_chunk = None
+    chunks: list = []
+    should_replay_thinking = _should_replay_thinking_state(llm_params.get("model"))
+
     for _llm_attempt in range(_MAX_LLM_RETRIES):
+        # Reset per attempt: a failed attempt must not leave half a response
+        # behind for the next one to append to.
+        full_content = ""
+        tool_calls_acc = {}
+        token_count = 0
+        finish_reason = None
+        final_usage_chunk = None
+        chunks = []
+        emitted_to_client = False
         try:
             async with use_custom_inference_openai_key_env(
                 session.config.model_name, llm_params
@@ -1041,8 +1090,62 @@ async def _call_llm_streaming(
                     timeout=600,
                     **llm_params,
                 )
+
+            async for chunk in response:
+                chunks.append(chunk)
+                if session.is_cancelled:
+                    tool_calls_acc.clear()
+                    break
+
+                choice = chunk.choices[0] if chunk.choices else None
+                if not choice:
+                    if getattr(chunk, "usage", None):
+                        token_count = chunk.usage.total_tokens
+                        final_usage_chunk = chunk
+                    continue
+
+                delta = choice.delta
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
+
+                if delta.content:
+                    full_content += delta.content
+                    emitted_to_client = True
+                    await session.send_event(
+                        Event(
+                            event_type="assistant_chunk",
+                            data={"content": delta.content},
+                        )
+                    )
+
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in tool_calls_acc:
+                            tool_calls_acc[idx] = {
+                                "id": "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            }
+                        if tc_delta.id:
+                            tool_calls_acc[idx]["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                tool_calls_acc[idx]["function"]["name"] += (
+                                    tc_delta.function.name
+                                )
+                            if tc_delta.function.arguments:
+                                tool_calls_acc[idx]["function"]["arguments"] += (
+                                    tc_delta.function.arguments
+                                )
+
+                if getattr(chunk, "usage", None):
+                    token_count = chunk.usage.total_tokens
+                    final_usage_chunk = chunk
             break
         except ContextWindowExceededError:
+            raise
+        except asyncio.CancelledError:
             raise
         except Exception as e:
             if _is_context_overflow_error(e):
@@ -1071,7 +1174,17 @@ async def _call_llm_streaming(
                 _healed_thinking_signature = True
                 continue
             _delay = _retry_delay_for(e, _llm_attempt)
-            if _llm_attempt < _MAX_LLM_RETRIES - 1 and _delay is not None:
+            retryable = _llm_attempt < _MAX_LLM_RETRIES - 1 and _delay is not None
+            if retryable and emitted_to_client:
+                # Part of the answer is already rendered. Retrying would replay
+                # it, and there is no way to retract an emitted chunk.
+                logger.warning(
+                    "LLM stream failed mid-response after %d chars; not retrying: %s",
+                    len(full_content),
+                    e,
+                )
+                raise
+            if retryable:
                 logger.warning(
                     "Transient LLM error (attempt %d/%d): %s — retrying in %ds",
                     _llm_attempt + 1,
@@ -1088,65 +1201,10 @@ async def _call_llm_streaming(
                         },
                     )
                 )
-                await asyncio.sleep(_delay)
+                if await _sleep_or_cancel(session, _delay):
+                    break
                 continue
             raise
-
-    full_content = ""
-    tool_calls_acc: dict[int, dict] = {}
-    token_count = 0
-    finish_reason = None
-    final_usage_chunk = None
-    chunks = []
-    should_replay_thinking = _should_replay_thinking_state(llm_params.get("model"))
-
-    async for chunk in response:
-        chunks.append(chunk)
-        if session.is_cancelled:
-            tool_calls_acc.clear()
-            break
-
-        choice = chunk.choices[0] if chunk.choices else None
-        if not choice:
-            if hasattr(chunk, "usage") and chunk.usage:
-                token_count = chunk.usage.total_tokens
-                final_usage_chunk = chunk
-            continue
-
-        delta = choice.delta
-        if choice.finish_reason:
-            finish_reason = choice.finish_reason
-
-        if delta.content:
-            full_content += delta.content
-            await session.send_event(
-                Event(event_type="assistant_chunk", data={"content": delta.content})
-            )
-
-        if delta.tool_calls:
-            for tc_delta in delta.tool_calls:
-                idx = tc_delta.index
-                if idx not in tool_calls_acc:
-                    tool_calls_acc[idx] = {
-                        "id": "",
-                        "type": "function",
-                        "function": {"name": "", "arguments": ""},
-                    }
-                if tc_delta.id:
-                    tool_calls_acc[idx]["id"] = tc_delta.id
-                if tc_delta.function:
-                    if tc_delta.function.name:
-                        tool_calls_acc[idx]["function"]["name"] += (
-                            tc_delta.function.name
-                        )
-                    if tc_delta.function.arguments:
-                        tool_calls_acc[idx]["function"]["arguments"] += (
-                            tc_delta.function.arguments
-                        )
-
-        if hasattr(chunk, "usage") and chunk.usage:
-            token_count = chunk.usage.total_tokens
-            final_usage_chunk = chunk
 
     usage = await telemetry.record_llm_call(
         session,
@@ -1248,7 +1306,8 @@ async def _call_llm_non_streaming(
                         },
                     )
                 )
-                await asyncio.sleep(_delay)
+                if await _sleep_or_cancel(session, _delay):
+                    break
                 continue
             raise
 
